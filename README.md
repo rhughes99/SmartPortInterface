@@ -1,6 +1,24 @@
 --- SmartPortInterfaceSharedMem Notes
 
-xxx
+How to run:
+0) Before applying power
+	SD card not inserted
+	Enable toggle switch in center position
+	A2 power off
+
+1) Apply power to system
+	Turn on power strip
+
+2) source setup.sh
+
+3) Set enable toggle switch
+
+4) make
+
+5) gcc SmartPortControllerTest.c -o Controller
+   gcc SmartPortController -o Controller
+
+	
 
 
 

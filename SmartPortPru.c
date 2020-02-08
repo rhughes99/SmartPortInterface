@@ -14,19 +14,19 @@
 		OUTEN-	P8_42	R30_5	0=LS367 enabled, RDAT active
 		RDat	P8_39	R30_6
 		ACK		P8_40	R30_7	1=ready to send/receive
-		LED		P8_27	R30_8	
+		LED		P8_27	R30_8
 		TEST	P8_29	R30_9
 
 	Memory Locations shared with Controller:
 		STATUS		0x300
 		Bus ID 1	0x301
 		Bus ID 2	0x302
-		
+
 		Received packet start	0x400	1024
 		Sent packet start		0x800	2048
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
-*/	
+*/
 
 
 #define PRU0_DRAM		0x00000			// Offset to DRAM
@@ -72,15 +72,12 @@ typedef enum
 
 void HandleReset(void);
 eBusState GetBusState(void);
-
-
-
-
+void ReceivePacket(void);
 
 //____________________
 int main(int argc, char *argv[])
 {
-	uint32_t allPhases;
+//	uint32_t allPhases;
 	eBusState previousBusState, currentBusState;
 	previousBusState = eUnknown;
 
@@ -100,7 +97,7 @@ int main(int argc, char *argv[])
 	// Clear SYSCFG[STANDBY_INIT] to enable OCP master port
 	CT_CFG.SYSCFG_bit.STANDBY_INIT = 0;
 
-	Reset();
+	HandleReset();
 
 	while (1)
 	{
@@ -110,6 +107,7 @@ int main(int argc, char *argv[])
 			switch (currentBusState)
 			{
 				case eBusIdle:
+					__R30 &= ~LED;		// LED off
 					PRU1_RAM[STATUS] = eIDLE;
 					break;
 
@@ -119,8 +117,12 @@ int main(int argc, char *argv[])
 					break;
 
 				case eBusEnabled:
+					__R30 &= ~TEST;		// TEST=0
+					__R30 |= LED;		// LED on
 					PRU1_RAM[STATUS] = eENABLED;
-					// DO SOMETHING
+
+					__R30 |= ACK;		// set ACK, ready to receive
+					ReceivePacket();
 					break;
 
 				default:
@@ -136,19 +138,20 @@ void HandleReset(void)
 {
 	// Reset outputs and SP parameters
 
+	__R30 |= TEST;		// TEST=1
 	__R30 &= ~ACK;		// clear ACK, we are not ready to send/receive yet
 	__R30 |=  OUTEN;	// tri-state RDAT
 	__R30 &= ~LED;		// LED off
-	__R30 &= ~TEST;		// TEST=0
+//	__R30 &= ~TEST;		// TEST=0
 
 	inited = 0;		// not initialized so send first Init reply
 	busID1 = 0xFF;	// set bus IDs to uninitialized values
-	busID2 = 0xFF;
+	busID2 = 0xFE;
 
 	PRU1_RAM[BUS_ID_1] = busID1;	// reset bus IDs
 	PRU1_RAM[BUS_ID_2] = busID2;
 
-	__delay_cycles(2000);	// ~10 us
+//	__delay_cycles(2000);	// ~10 us
 }
 
 //____________________
@@ -165,15 +168,24 @@ eBusState GetBusState(void)
 		case 0x0E:
 		case 0x0F:
 			return eBusEnabled;
-			break;
+//			break;
 
 		case 0x05:
 			return eBusReset;
-			break;
+//			break;
 
 		default:
 			return eBusIdle;
 	}
 }
 
+//____________________
+void ReceivePacket(void)
+{
+	// Wait for WDATA to go low, our t0
+	while((__R31 & WDAT) == WDAT);		// Can hang here!?
 
+	PRU1_RAM[STATUS] = eRCVDPACK;
+
+
+}

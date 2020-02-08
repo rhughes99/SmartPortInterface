@@ -72,27 +72,28 @@ int main(int argc, char *argv[])
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
 
-	unsigned int *pru;		// Points to start of PRU memory
+//	unsigned int *pru;		// Points to start of PRU memory
+	unsigned char *pru;
 //	unsigned int *pruDRAM_32int_ptr;
 	int	fd;
 
-	fd = open ("/dev/mem", O_RDWR | O_SYNC);
+	fd = open("/dev/mem", O_RDWR | O_SYNC);
 	if (fd == -1)
 	{
-		printf ("*** ERROR: could not open /dev/mem.\n");
+		printf("*** ERROR: could not open /dev/mem.\n");
 		return EXIT_FAILURE;
 	}
-	pru = mmap (0, PRU_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, PRU_ADDR);
+	pru = mmap(0, PRU_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, PRU_ADDR);
 	if (pru == MAP_FAILED)
 	{
-		printf ("*** ERROR: could not map memory.\n");
+		printf("*** ERROR: could not map memory.\n");
 		return EXIT_FAILURE;
 	}
 	close(fd);
 
 	// Set memory pointers
 //	pru0DRAM_32int_ptr =     pru + PRU0_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU0 memory
-	pru1DRAM_32int_ptr =     pru + PRU1_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU1 memory
+//	pru1DRAM_32int_ptr =     pru + PRU1_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU1 memory
 	pru1DRAM_char_ptr  = pru + PRU1_DRAM + 0x200;
 //	prusharedMem_32int_ptr = pru + PRU_SHAREDMEM/4;			// Points to start of shared memory
 
@@ -105,7 +106,7 @@ int main(int argc, char *argv[])
 
 	diskImage1Changed = 0;
 	diskImage2Changed = 0;
-	
+
 	(void) signal(SIGINT,  myShutdown);					// ^c = graceful shutdown
 	(void) signal(SIGTSTP, myDebug);					// ^z
 
@@ -127,7 +128,7 @@ int main(int argc, char *argv[])
 	do
 	{
 		usleep(100);
-		pruStatus = *pruStatusPtr;		
+		pruStatus = *pruStatusPtr;
 		switch (pruStatus)
 		{
 			case eIDLE:
@@ -146,8 +147,8 @@ int main(int argc, char *argv[])
 					printf("--- Reset %d \n", resetCnt);
 //					spID1 = 0xFF;
 //					spID2 = 0xFF;
-					spID1 = *pruStatusPtr + 1;
-					spID2 = *pruStatusPtr + 2;
+					spID1 = *(pruStatusPtr + 1);
+					spID2 = *(pruStatusPtr + 2);
 					printf("spID1=0x%X spID2=0x%X\n", spID1, spID2);
 
 					readCnt1 = 0;
@@ -172,8 +173,8 @@ int main(int argc, char *argv[])
 			{	// PRU has a packet, command or data
 				printf("Received packet\n");
 
-				destID = *(rcvdPacketPtr + 7);						// with msb = 1
-				type   = *(rcvdPacketPtr + 9);						// 0x80=Cmd, 0x81=Status, 0x82=Data
+				destID = *(rcvdPacketPtr + 7);					// with msb = 1
+				type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
 				cmdNum = *(rcvdPacketPtr + 15);
 
 				destDevice = destID - spID1;					// theImages[0] or [1]
@@ -201,7 +202,6 @@ int main(int argc, char *argv[])
 			}
 			default:
 				printf("*** Unexpected pruStatus: %d\n", pruStatus);
-			}
 		}
 	} while (running);
 
