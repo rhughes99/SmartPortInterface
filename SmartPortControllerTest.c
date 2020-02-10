@@ -67,7 +67,8 @@ int main(int argc, char *argv[])
 	size_t length;
 
 	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
-	enum pruStatuses pruStatus, lastPruStatus;
+//	enum pruStatuses pruStatus, lastPruStatus;
+	enum pruStatuses pruStatus;
 
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
@@ -110,8 +111,7 @@ int main(int argc, char *argv[])
 	(void) signal(SIGINT,  myShutdown);					// ^c = graceful shutdown
 	(void) signal(SIGTSTP, myDebug);					// ^z
 
-
-	lastPruStatus = eUNKNOWN;
+//	lastPruStatus = eUNKNOWN;
 	spID1 = 0xFF;										// we are not inited yet
 	spID2 = 0xFF;
 	resetCnt = 0;
@@ -123,6 +123,7 @@ int main(int argc, char *argv[])
 	running = 1;
 	imageToggle = 0;
 
+	encodeInitReplyPackets();							// put two Init reply packets in PRU ram
 
 	printf("\n--- SmartPortIF running\n");
 	do
@@ -133,16 +134,16 @@ int main(int argc, char *argv[])
 		{
 			case eIDLE:
 			{
-				if (pruStatus != lastPruStatus)
+//				if (pruStatus != lastPruStatus)
 				{
 					printf("Idle\n");
-					lastPruStatus = pruStatus;
+//					lastPruStatus = pruStatus;
 				}
 				break;
 			}
 			case eRESET:
 			{
-				if (pruStatus != lastPruStatus)
+//				if (pruStatus != lastPruStatus)
 				{
 					printf("--- Reset %d \n", resetCnt);
 //					spID1 = 0xFF;
@@ -156,16 +157,16 @@ int main(int argc, char *argv[])
 					readCnt2 = 0;
 					writeCnt2 = 0;
 					resetCnt++;
-					lastPruStatus = pruStatus;
+//					lastPruStatus = pruStatus;
 				}
 				break;
 			}
 			case eENABLED:
 			{
-				if (pruStatus != lastPruStatus)
+//				if (pruStatus != lastPruStatus)
 				{
 					printf("Enabled\n");
-					lastPruStatus = pruStatus;
+//					lastPruStatus = pruStatus;
 				}
 				break;
 			}
@@ -184,19 +185,19 @@ int main(int argc, char *argv[])
 			}
 			case eSENDING:
 			{
-				if (pruStatus != lastPruStatus)
+//				if (pruStatus != lastPruStatus)
 				{
 					printf("Sending...\n");
-					lastPruStatus = eSENDING;
+//					lastPruStatus = eSENDING;
 				}
 				break;
 			}
 			case eWRITING:
 			{
-				if (pruStatus != lastPruStatus)
+//				if (pruStatus != lastPruStatus)
 				{
 					printf("Writing...\n");
-					lastPruStatus = eWRITING;
+//					lastPruStatus = eWRITING;
 				}
 				break;
 			}
@@ -244,6 +245,90 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 //____________________
 void encodeInitReplyPackets(void)
 {
+	// Puts two Init reply packets in PRU.
+	// Source IDs filled in by PRU.
+	// This routine computes checksum for all elements except source ID
+	//  and puts it in Ptr+19. PRU completes calculation and puts
+	//  result in Ptr+19 & Ptr+20
+	// First device is big HD, second is 800k HD
+	unsigned char checksum = 0;
+	unsigned int i;
+
+	// Device 1
+	*(initResp1Ptr     ) = 0xFF;				// sync bytes
+	*(initResp1Ptr +  1) = 0x3F;
+	*(initResp1Ptr +  2) = 0xCF;
+	*(initResp1Ptr +  3) = 0xF3;
+	*(initResp1Ptr +  4) = 0xFC;
+	*(initResp1Ptr +  5) = 0xFF;
+
+	*(initResp1Ptr +  6) = 0xC3;				// packet begin
+	*(initResp1Ptr +  7) = 0x80;				// destination
+	*(initResp1Ptr +  8) = 0x00;				// source, filled in by PRU
+	*(initResp1Ptr +  9) = 0x81;				// packet Type: 1 = status
+	*(initResp1Ptr + 10) = 0x80;				// aux type: 0 = standard packet
+	*(initResp1Ptr + 11) = 0x80;				// data status: 0 = not last device on bus
+	*(initResp1Ptr + 12) = 0x84;				// odd byte count: 4
+	*(initResp1Ptr + 13) = 0x80;				// groups-of-7 count: 0
+
+	for (i=7; i<14; i++)
+		checksum ^= *(initResp1Ptr+i);
+
+												// 32 MB  - 0x010000 (or 0x00FFFF ???)
+	*(initResp1Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
+	*(initResp1Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
+	checksum ^= 0xF0;
+	*(initResp1Ptr + 16) = 0x80;				// block size low byte: 0x00
+	*(initResp1Ptr + 17) = 0x80;				// block size mid byte: 0x00
+	*(initResp1Ptr + 18) = 0x81;				// block size high byte: 0x01
+	checksum ^= 0x01;
+
+//	*(initResp1Ptr + 19) =  checksum	   | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
+//	*(initResp1Ptr + 20) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
+	*(initResp1Ptr + 19) = checksum;
+	*(initResp1Ptr + 20) = 0x00;
+
+	*(initResp1Ptr + 21) = 0xC8;				// PEND
+	*(initResp1Ptr + 22) = 0x00;				// end of packet marker in memory
+
+	// Device 2
+	*(initResp2Ptr     ) = 0xFF;				// sync bytes
+	*(initResp2Ptr +  1) = 0x3F;
+	*(initResp2Ptr +  2) = 0xCF;
+	*(initResp2Ptr +  3) = 0xF3;
+	*(initResp2Ptr +  4) = 0xFC;
+	*(initResp2Ptr +  5) = 0xFF;
+
+	*(initResp2Ptr +  6) = 0xC3;				// packet begin
+	*(initResp2Ptr +  7) = 0x80;				// destination
+	*(initResp2Ptr +  8) = 0x00;				// source, filled in by PRU
+	*(initResp2Ptr +  9) = 0x81;				// packet Type: 1 = status
+	*(initResp2Ptr + 10) = 0x80;				// aux type: 0 = standard packet
+	*(initResp2Ptr + 11) = 0xFF;				// data status: FF = last device on bus
+	*(initResp2Ptr + 12) = 0x84;				// odd byte count: 4
+	*(initResp2Ptr + 13) = 0x80;				// groups-of-7 count: 0
+
+	checksum = 0;
+	for (i=7; i<14; i++)
+		checksum ^= *(initResp2Ptr+i);
+
+												// 800kB  - 0x000640
+	*(initResp2Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
+	*(initResp2Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
+	checksum ^= 0xF0;
+	*(respPacketPtr + 16) = 0xC0;				// block size low byte: 0x40
+	checksum ^= 0x40;
+	*(respPacketPtr + 17) = 0x86;				// block size mid byte: 0x06
+	checksum ^= 0x06;
+	*(respPacketPtr + 18) = 0x80;				// block size high byte: 0x00
+
+//	*(initResp2Ptr + 19) =  checksum	   | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
+//	*(initResp2Ptr + 20) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
+	*(initResp2Ptr + 19) = checksum;
+	*(initResp2Ptr + 20) = 0x00;
+
+	*(initResp2Ptr + 21) = 0xC8;				// PEND
+	*(initResp2Ptr + 22) = 0x00;				// end of packet marker in memory
 }
 
 //____________________

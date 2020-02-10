@@ -28,7 +28,6 @@
 		Init response #2 start	0xE00	3584
 */
 
-
 #define PRU0_DRAM		0x00000			// Offset to DRAM
 // First 0x200 bytes of DRAM are STACK & HEAP
 //volatile unsigned char *PRU1_RAM = (unsigned char *) (PRU0_DRAM + 0x200);
@@ -36,6 +35,9 @@ volatile unsigned char *PRU1_RAM = (unsigned char *) PRU0_DRAM;
 
 // Fixed PRU Memory Locations
 #define RCVD_PACKET_ADR		0x0400		// 1048, command or data from A2
+#define RCVD_DEST_ADR		0x0407		// Destination ID offset
+#define RCVD_CMD_ADR		0x040F		// CMD number offset
+
 #define RESP_PACKET_ADR		0x0800		// 2024, status or data, all responses except Inits
 #define INIT_RESP_1_ADR		0x0C00		// 3072
 #define INIT_RESP_2_ADR		0x0E00		// 3584
@@ -73,11 +75,11 @@ typedef enum
 void HandleReset(void);
 eBusState GetBusState(void);
 void ReceivePacket(void);
+void SendInit(void);
 
 //____________________
 int main(int argc, char *argv[])
 {
-//	uint32_t allPhases;
 	eBusState previousBusState, currentBusState;
 	previousBusState = eUnknown;
 
@@ -117,12 +119,14 @@ int main(int argc, char *argv[])
 					break;
 
 				case eBusEnabled:
-					__R30 &= ~TEST;		// TEST=0
+//					__R30 &= ~TEST;		// TEST=0
 					__R30 |= LED;		// LED on
 					PRU1_RAM[STATUS] = eENABLED;
 
 					__R30 |= ACK;		// set ACK, ready to receive
 					ReceivePacket();
+					
+					ProcessPacket();
 					break;
 
 				default:
@@ -138,11 +142,11 @@ void HandleReset(void)
 {
 	// Reset outputs and SP parameters
 
-	__R30 |= TEST;		// TEST=1
+//	__R30 |= TEST;		// TEST=1
+//	__R30 &= ~TEST;		// TEST=0
 	__R30 &= ~ACK;		// clear ACK, we are not ready to send/receive yet
 	__R30 |=  OUTEN;	// tri-state RDAT
 	__R30 &= ~LED;		// LED off
-//	__R30 &= ~TEST;		// TEST=0
 
 	inited = 0;		// not initialized so send first Init reply
 	busID1 = 0xFF;	// set bus IDs to uninitialized values
@@ -182,10 +186,79 @@ eBusState GetBusState(void)
 //____________________
 void ReceivePacket(void)
 {
+	unsigned char lastWDAT, byteInProcess, bitCnt, packetNotDone;
+	unsigned char currentWDAT, WDAT_xor;
+	unsigned int memoryPtr;
+	
+	lastWDAT = 1;
+	byteInProcess = 0;
+	bitCnt = 0;
+	packetNotDone = 1;
+	memoryPtr = RCVD_PACKET_ADR;
+	
 	// Wait for WDATA to go low, our t0
 	while((__R31 & WDAT) == WDAT);		// Can hang here!?
 
+	__delay_cycles(400);	// 2 us to sample in bit cell center
+
+	__R30 |= TEST;		// TEST=1
+
+	while (packetNotDone == 1)
+	{
+		currentWDAT = __R31 & WDAT;
+		WDAT_xor = lastWDAT ^ currentWDAT;
+		lastWDAT = currentWDAT;
+
+		if (WDAT_xor == 0)
+			byteInProcess &= 0xFE;
+		else
+			byteInProcess |= 0x01;
+
+		if (bitCnt = 7)		// done with this byte
+		{
+			PRU1_RAM[memoryPtr] = byteInProcess;
+			memoryPtr++;
+			if (byteInProcess == 0x00)		// WDAT hasn't changed in 32 us
+				packetNotDone = 0;
+			else
+				bitCnt = 0;
+		}
+		else				// not done with this byte
+		{
+			byteInProcess << 1;		// shift bits left
+			bitCnt++;
+		}
+		__delay_cycles(300);	// 1.5 us
+	}	
+s
+	__R30 &= ~TEST;		// TEST=0
+
 	PRU1_RAM[STATUS] = eRCVDPACK;
 
+}
+
+//____________________
+void ProcessPacket(void)
+{
+	unsigned char cmd;
+
+	cmd = PRU1_RAM[RCVD_CMD_ADR];
+	
+	if (cmd == 0x85)
+		SendInit();
+	else
+	{
+		Tell Controller and wait for go-ahead
+	}
+
+}
+
+//____________________
+void SendInit(void)
+{
+	// Send first or second Init packet, based on inited
+	
+	
+	
 
 }
