@@ -18,7 +18,9 @@ How to run:
 5) gcc SmartPortControllerTest.c -o Controller
    gcc SmartPortController -o Controller
 
-	
+6) ./Controller
+
+7) Turn on A2	
 
 
 

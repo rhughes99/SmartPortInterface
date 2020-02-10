@@ -30,12 +30,10 @@ void debugDataPacket(void);
 // PRU Memory Locations
 #define PRU_ADDR		0x4A300000		// Start of PRU memory Page 163 am335x TRM
 #define PRU_LEN			0x80000			// Length of PRU memory
-//#define PRU0_DRAM		0x00000			// Offset to DRAM
 #define PRU1_DRAM		0x02000
 //#define PRU_SHAREDMEM	0x10000			// Offset to shared memory
 
-//unsigned int *pru0DRAM_32int_ptr;		// Points to the start of PRU 0 usable RAM
-unsigned int *pru1DRAM_32int_ptr;		// Points to the start of PRU 1 usable RAM
+//unsigned int *pru1DRAM_32int_ptr;		// Points to the start of PRU 1 usable RAM
 unsigned char *pru1DRAM_char_ptr;
 //unsigned int *prusharedMem_32int_ptr;	// Points to the start of shared memory
 
@@ -52,7 +50,6 @@ unsigned char running;
 unsigned char theImages[2][NUM_BLOCKS][512];				// [device][block][byte]
 unsigned char tempBuffer[512];								// holds data from A2 till verified
 
-
 // IDs provided by A2
 unsigned char spID1, spID2, imageToggle;	// we seem to assume spID2 > spID1
 
@@ -67,15 +64,12 @@ int main(int argc, char *argv[])
 	size_t length;
 
 	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
-//	enum pruStatuses pruStatus, lastPruStatus;
-	enum pruStatuses pruStatus;
+	enum pruStatuses pruStatus, lastPruStatus;
 
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
 
-//	unsigned int *pru;		// Points to start of PRU memory
-	unsigned char *pru;
-//	unsigned int *pruDRAM_32int_ptr;
+	unsigned char *pru;		// start of PRU memory
 	int	fd;
 
 	fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -93,8 +87,6 @@ int main(int argc, char *argv[])
 	close(fd);
 
 	// Set memory pointers
-//	pru0DRAM_32int_ptr =     pru + PRU0_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU0 memory
-//	pru1DRAM_32int_ptr =     pru + PRU1_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU1 memory
 	pru1DRAM_char_ptr  = pru + PRU1_DRAM + 0x200;
 //	prusharedMem_32int_ptr = pru + PRU_SHAREDMEM/4;			// Points to start of shared memory
 
@@ -104,14 +96,13 @@ int main(int argc, char *argv[])
 	initResp1Ptr	= pru1DRAM_char_ptr + 0x0A00;			// 0x200 + 0xA00 = 3072
 	initResp2Ptr	= pru1DRAM_char_ptr + 0x0C00;			// 0x200 + 0xC00 = 3584
 
-
 	diskImage1Changed = 0;
 	diskImage2Changed = 0;
 
 	(void) signal(SIGINT,  myShutdown);					// ^c = graceful shutdown
 	(void) signal(SIGTSTP, myDebug);					// ^z
 
-//	lastPruStatus = eUNKNOWN;
+	lastPruStatus = eUNKNOWN;
 	spID1 = 0xFF;										// we are not inited yet
 	spID2 = 0xFF;
 	resetCnt = 0;
@@ -134,20 +125,18 @@ int main(int argc, char *argv[])
 		{
 			case eIDLE:
 			{
-//				if (pruStatus != lastPruStatus)
+				if (pruStatus != lastPruStatus)
 				{
 					printf("Idle\n");
-//					lastPruStatus = pruStatus;
+					lastPruStatus = pruStatus;
 				}
 				break;
 			}
 			case eRESET:
 			{
-//				if (pruStatus != lastPruStatus)
+				if (pruStatus != lastPruStatus)
 				{
 					printf("--- Reset %d \n", resetCnt);
-//					spID1 = 0xFF;
-//					spID2 = 0xFF;
 					spID1 = *(pruStatusPtr + 1);
 					spID2 = *(pruStatusPtr + 2);
 					printf("spID1=0x%X spID2=0x%X\n", spID1, spID2);
@@ -157,16 +146,16 @@ int main(int argc, char *argv[])
 					readCnt2 = 0;
 					writeCnt2 = 0;
 					resetCnt++;
-//					lastPruStatus = pruStatus;
+					lastPruStatus = pruStatus;
 				}
 				break;
 			}
 			case eENABLED:
 			{
-//				if (pruStatus != lastPruStatus)
+				if (pruStatus != lastPruStatus)
 				{
 					printf("Enabled\n");
-//					lastPruStatus = pruStatus;
+					lastPruStatus = pruStatus;
 				}
 				break;
 			}
@@ -178,6 +167,10 @@ int main(int argc, char *argv[])
 				type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
 				cmdNum = *(rcvdPacketPtr + 15);
 
+				printf("\tdestID = 0x%X\n", destID);
+				printf("\ttype   = 0x%X\n", type);
+				printf("\tcmdNm  = 0x%X\n", cmdNum);
+
 				destDevice = destID - spID1;					// theImages[0] or [1]
 
 				printPacket(destID);
@@ -185,19 +178,19 @@ int main(int argc, char *argv[])
 			}
 			case eSENDING:
 			{
-//				if (pruStatus != lastPruStatus)
+				if (pruStatus != lastPruStatus)
 				{
 					printf("Sending...\n");
-//					lastPruStatus = eSENDING;
+					lastPruStatus = eSENDING;
 				}
 				break;
 			}
 			case eWRITING:
 			{
-//				if (pruStatus != lastPruStatus)
+				if (pruStatus != lastPruStatus)
 				{
 					printf("Writing...\n");
-//					lastPruStatus = eWRITING;
+					lastPruStatus = eWRITING;
 				}
 				break;
 			}
@@ -218,6 +211,7 @@ int main(int argc, char *argv[])
 void myShutdown(int sig)
 {
 	// ctrl-c
+	printf("\n");
 	running = 0;
 	(void) signal(SIGINT, SIG_DFL);		// reset signal handling of SIGINT
 }
@@ -225,6 +219,24 @@ void myShutdown(int sig)
 //____________________
 void myDebug(int sig)
 {
+	// ctrl-z
+	unsigned int i;
+
+	printf("\n");
+//	for (i=0; i<16; i++)
+//		printf("%d 0x%X\n", i, *(rcvdPacketPtr + i));
+
+	printf("0 %X [FF]\n", *rcvdPacketPtr);
+	printf("1 %X [3F]\n", *(rcvdPacketPtr+1));
+	printf("2 %X [CF]\n", *(rcvdPacketPtr+2));
+	printf("3 %X [F3]\n", *(rcvdPacketPtr+3));
+	printf("4 %X [FC]\n", *(rcvdPacketPtr+4));
+	printf("5 %X [FF]\n", *(rcvdPacketPtr+5));
+	printf("6 %X [C3]\n", *(rcvdPacketPtr+6));
+
+	printf("25 %X [BB]\n", *(rcvdPacketPtr+25));
+	printf("26 %X [BE]\n", *(rcvdPacketPtr+26));
+	printf("27 %X [C8]\n", *(rcvdPacketPtr+27));
 }
 
 //____________________
