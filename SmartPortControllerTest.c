@@ -38,17 +38,17 @@ unsigned char *pru1DRAM_char_ptr;
 //unsigned int *prusharedMem_32int_ptr;	// Points to the start of shared memory
 
 
-static unsigned char *pruStatusPtr;					// PRU -> Controller
-static unsigned char *rcvdPacketPtr;				// start of what A2 sent us
-static unsigned char *respPacketPtr;				// start of what we send to A2
-static unsigned char *initResp1Ptr;					// start of Init response 1
-static unsigned char *initResp2Ptr;					// start of Init response 2
+static unsigned char *pruStatusPtr;				// PRU -> Controller
+static unsigned char *rcvdPacketPtr;			// start of what A2 sent us
+static unsigned char *respPacketPtr;			// start of what we send to A2
+static unsigned char *initResp1Ptr;				// start of Init response 1
+static unsigned char *initResp2Ptr;				// start of Init response 2
 
 
 unsigned char running;
 #define NUM_BLOCKS	65536
-unsigned char theImages[2][NUM_BLOCKS][512];		// [device][block][byte]
-unsigned char tempBuffer[512];						// holds data from A2 till verified
+unsigned char theImages[2][NUM_BLOCKS][512];	// [device][block][byte]
+unsigned char tempBuffer[512];					// holds data from A2 till verified
 
 // IDs provided by A2
 //unsigned char spID1, spID2, imageToggle;	// we seem to assume spID2 > spID1
@@ -57,7 +57,7 @@ unsigned char spID1, spID2;					// we seem to assume spID2 > spID1
 //____________________
 int main(int argc, char *argv[])
 {
-	unsigned char destID, destDevice, type, cmdNum, statCode;
+	unsigned char destID, destDevice, type, cmdNum, statCode, id;
 	unsigned char msbs, blkNumLow, blkNumMid, blkNumHi;
 	unsigned char diskImage1Changed, diskImage2Changed;		// 1 = image changed since loading
 	unsigned int i, resetCnt, loopCnt, blkNum, readCnt1, writeCnt1, readCnt2, writeCnt2;
@@ -104,8 +104,8 @@ int main(int argc, char *argv[])
 	(void) signal(SIGTSTP, myDebug);					// ^z
 
 	lastPruStatus = eUNKNOWN;
-//	spID1 = 0xFF;										// we are not inited yet
-//	spID2 = 0xFF;
+	spID1 = 0xFF;										// we are not inited yet
+	spID2 = 0xFF;
 	resetCnt = 0;
 	readCnt1 = 0;
 	readCnt2 = 0;
@@ -129,6 +129,18 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("Idle\n");
+					id = *(pruStatusPtr+1);
+					if (id != spID1)
+					{
+						spID1 = id;
+						printf("\tspID1 changed to 0x%X\n", spID1);
+					}
+					id = *(pruStatusPtr+2);
+					if (id != spID2)
+					{
+						spID2 = id;
+						printf("\tspID2 changed to 0x%X\n", spID2);
+					}
 					lastPruStatus = pruStatus;
 				}
 				break;
@@ -138,9 +150,9 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("--- Reset %d \n", resetCnt);
-					spID1 = *(pruStatusPtr + 1);
-					spID2 = *(pruStatusPtr + 2);
-					printf("spID1=0x%X spID2=0x%X\n", spID1, spID2);
+					spID1 = *(pruStatusPtr+1);
+					spID2 = *(pruStatusPtr+2);
+					printf("\tspID1=0x%X spID2=0x%X\n", spID1, spID2);
 
 					readCnt1 = 0;
 					writeCnt1 = 0;
@@ -156,34 +168,49 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("Enabled\n");
+					id = *(pruStatusPtr+1);
+					if (id != spID1)
+					{
+						spID1 = id;
+						printf("\tspID1 changed to 0x%X\n", spID1);
+					}
+					id = *(pruStatusPtr+2);
+					if (id != spID2)
+					{
+						spID2 = id;
+						printf("\tspID2 changed to 0x%X\n", spID2);
+					}
 					lastPruStatus = pruStatus;
 				}
 				break;
 			}
 			case eRCVDPACK:
 			{	// PRU has a packet, command or data
-				printf("Received packet\n");
-
-				destID = *(rcvdPacketPtr + 7);					// with msb = 1
-				type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
-				cmdNum = *(rcvdPacketPtr + 15);
-
-				printf("\tdestID = 0x%X\n", destID);
-				printf("\ttype   = 0x%X\n", type);
-				printf("\tcmdNm  = 0x%X\n", cmdNum);
-
-				if (cmdNm == 0x85)								// an Init, we can ignore
-					break;
-
-
-				if (*(pruStatusPtr + 3) > 0)
+				if (pruStatus != lastPruStatus)
 				{
-					printf("PRU waiting for Controller\n");
-					usleep(100);
-					*(pruStatusPtr + 3) = 0x00;
-				}
-)
+					printf("Received packet\n");
 
+					destID = *(rcvdPacketPtr + 7);					// with msb = 1
+					type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
+					cmdNum = *(rcvdPacketPtr + 15);
+
+					printf("\tdestID = 0x%X\n", destID);
+					printf("\ttype   = 0x%X\n", type);
+					printf("\tcmdNm  = 0x%X\n", cmdNum);
+
+					if (cmdNum == 0x85)								// an Init, we can ignore
+						break;
+
+
+					if (*(pruStatusPtr + 3) > 0)
+					{
+						printf("PRU waiting for Controller\n");
+						usleep(1000);
+//						*(pruStatusPtr + 3) = 0x00;
+					}
+
+					lastPruStatus = eRCVDPACK;
+				}
 
 //				destDevice = destID - spID1;					// theImages[0] or [1]
 
@@ -377,7 +404,7 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 	*(respPacketPtr +  3) = 0xF3;
 	*(respPacketPtr +  4) = 0xFC;
 	*(respPacketPtr +  5) = 0xFF;
-	
+
 	*(respPacketPtr +  6) = 0xC3;				// packet begin
 	*(respPacketPtr +  7) = 0x80;				// destination
 	*(respPacketPtr +  8) = srcID;				// source
@@ -389,7 +416,7 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 
 	for (i=7; i<14; i++)
 		checksum ^= *(respPacketPtr+i);
-	
+
 	if (srcID == spID1)
 	{											// 32 MB  - 0x010000 (or 0x00FFFF ???)
 		*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
@@ -657,7 +684,7 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		*(respPacketPtr + 41) = 0x80;				// firmware version, 2 bytes
 		checksum ^= 0x00;
 		*(respPacketPtr + 42) = 0x80;
-	}	
+	}
 
 	*(respPacketPtr + 43) =  checksum       | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 44) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
@@ -669,7 +696,7 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 void encodeHandshakeReplyPacket(void)
 {
 	// Creates zero-length message; used when all we want to do is handshake with A2
-	*(respPacketPtr+6) = 0x00;	
+	*(respPacketPtr+6) = 0x00;
 }
 
 //____________________
