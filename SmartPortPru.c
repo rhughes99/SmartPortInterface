@@ -100,6 +100,7 @@ int main(int argc, char *argv[])
 				PRU1_RAM[STATUS] = eIDLE;
 				__R30 &= ~LED;		// LED off
 //				__R30 |=  OUTEN;	// float RDAT
+				__R30 |=  ACK;		// ACK = 1, ready to receive
 				break;
 
 			case eRESET:
@@ -110,7 +111,7 @@ int main(int argc, char *argv[])
 			case eENABLED:
 				PRU1_RAM[STATUS] = eENABLED;
 				__R30 |= LED;		// LED on
-				__R30 |= ACK;		// ACK = 1, ready to receive
+//				__R30 |= ACK;		// ACK = 1, ready to receive
 
 				ReceivePacket();	// receive packet & store in memory
 
@@ -344,7 +345,7 @@ void SendPacket(unsigned int memPtr)
 	__R30 &= ~ACK;		//  ACK = 0, tell A2 we are done with this packet
 
 	__delay_cycles(1600);	// n us, short delay?
-	__R30 |= OUTEN;			// set OUTEN- to float RDAT
+	__R30 |= OUTEN;			// float RDAT
 
 	// Note from previous version
 	// Can't just WBC r31.t1 (REQ) here - fails Init

@@ -39,20 +39,33 @@ unsigned char *pru1DRAM_char_ptr;
 
 
 static unsigned char *pruStatusPtr;				// PRU -> Controller
+static unsigned char *busID1ptr;				// spID1 in PRU memory
+static unsigned char *busID2ptr;				// spID2 in PRU memory
+static unsigned char *pruWaitPtr;				// flag to pause PRU in PRU memory
 static unsigned char *rcvdPacketPtr;			// start of what A2 sent us
 static unsigned char *respPacketPtr;			// start of what we send to A2
 static unsigned char *initResp1Ptr;				// start of Init response 1
 static unsigned char *initResp2Ptr;				// start of Init response 2
-
 
 unsigned char running;
 #define NUM_BLOCKS	65536
 unsigned char theImages[2][NUM_BLOCKS][512];	// [device][block][byte]
 unsigned char tempBuffer[512];					// holds data from A2 till verified
 
+// First image is boot device
+//const char *diskImages[] = {"IIGSSystem604/LiveInstall.po", "Large/BigBlank.po"};
+
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BBBProgram.po"};
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/Assembleur.2mg"};
+//const char *diskImages[] = {"Large/BBBProgram.po", "Large/Sys604Copy3.po"};
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GOProDOS.2mg"};
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BigBlank.po"};
+
+const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/ZipChipUtil.po"};
+
 // IDs provided by A2
-//unsigned char spID1, spID2, imageToggle;	// we seem to assume spID2 > spID1
-unsigned char spID1, spID2;					// we seem to assume spID2 > spID1
+unsigned char spID1, spID2;
 
 //____________________
 int main(int argc, char *argv[])
@@ -92,11 +105,16 @@ int main(int argc, char *argv[])
 //	prusharedMem_32int_ptr = pru + PRU_SHAREDMEM/4;		// start of shared memory
 
 	pruStatusPtr	= pru1DRAM_char_ptr + 0x0100;		// 0x200 + 0x100 =  768
+	busID1ptr		= pruStatusPtr + 1;					// 0x301
+	busID2ptr		= pruStatusPtr + 2;					// 0x302
+	pruWaitPtr		= pruStatusPtr + 3;					// 0x303
+
 	rcvdPacketPtr	= pru1DRAM_char_ptr + 0x0200;		// 0x200 + 0x200 = 1024
 	respPacketPtr	= pru1DRAM_char_ptr + 0x0600;		// 0x200 + 0x600 = 2048
 	initResp1Ptr	= pru1DRAM_char_ptr + 0x0A00;		// 0x200 + 0xA00 = 3072
 	initResp2Ptr	= pru1DRAM_char_ptr + 0x0C00;		// 0x200 + 0xC00 = 3584
 
+	loadDiskImages(diskImages[0], diskImages[1]);		// load both images
 	diskImage1Changed = 0;
 	diskImage2Changed = 0;
 
@@ -113,7 +131,6 @@ int main(int argc, char *argv[])
 	writeCnt2 = 0;
 	loopCnt = 0;										// do something every n times around the loop
 	running = 1;
-//	imageToggle = 0;
 
 	encodeInitReplyPackets();							// put two Init reply packets in PRU ram
 
@@ -129,13 +146,13 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("Idle\n");
-					id = *(pruStatusPtr+1);
+					id = *busID1ptr;
 					if (id != spID1)
 					{
 						spID1 = id;
 						printf("\tspID1 changed to 0x%X\n", spID1);
 					}
-					id = *(pruStatusPtr+2);
+					id = *busID2ptr;
 					if (id != spID2)
 					{
 						spID2 = id;
@@ -150,8 +167,8 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("--- Reset %d \n", resetCnt);
-					spID1 = *(pruStatusPtr+1);
-					spID2 = *(pruStatusPtr+2);
+					spID1 = *busID1ptr;
+					spID2 = *busID2ptr;
 					printf("\tspID1=0x%X spID2=0x%X\n", spID1, spID2);
 
 					readCnt1 = 0;
@@ -168,13 +185,13 @@ int main(int argc, char *argv[])
 				if (pruStatus != lastPruStatus)
 				{
 					printf("Enabled\n");
-					id = *(pruStatusPtr+1);
+					id = *busID1ptr;
 					if (id != spID1)
 					{
 						spID1 = id;
 						printf("\tspID1 changed to 0x%X\n", spID1);
 					}
-					id = *(pruStatusPtr+2);
+					id = *busID1ptr;
 					if (id != spID2)
 					{
 						spID2 = id;
@@ -201,20 +218,169 @@ int main(int argc, char *argv[])
 					if (cmdNum == 0x85)								// an Init, we can ignore
 						break;
 
+					if (*pruWaitPtr > 0)
+						printf("PRU waiting for Controller...\n");
 
-					if (*(pruStatusPtr + 3) > 0)
+					if ((destID == spID1) || (destID == spID2))
 					{
-						printf("PRU waiting for Controller\n");
-						usleep(1000);
-//						*(pruStatusPtr + 3) = 0x00;
+						// Rcvd packet is for us so determine which device/image
+						if (destID == spID1)
+							destDevice = 0;
+						else
+							destDevice = 1;
+
+						if (type == 0x82)				// data packet
+						{
+							// blkNum was set previously by WriteBlock command so 
+							//  decode to tempBuffer[] and check status
+							if (decodeDataPacket() == 0)						// checksum ok
+							{
+//								printf("[0x%X] CS GOOD\n", destID);
+								for (i=0; i<512; i++)
+									theImages[destDevice][blkNum][i] = tempBuffer[i];
+
+								if (destDevice == 0)
+									diskImage1Changed = 1;
+								else
+									diskImage2Changed = 1;
+
+								encodeStdStatusReplyPacket(destID, 0x00);		// 0x00 = no error
+							}
+							else
+							{
+								printf("*** [0x%X] Bad Write datablock status\n", destID);
+								encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
+
+//								debugDataPacket();
+							}
+						}
+						else							// command packet
+						{
+							checkCmdChecksum();
+							switch (cmdNum)
+							{
+								case eSTATUS:
+								case eEXTSTATUS:
+								{
+									statCode = *(rcvdPacketPtr + 20) & 0x7F;
+									printf("[0x%X] Std Status: %d\n", destID, statCode);
+
+									if (statCode == 0x00)
+										encodeStdStatusReplyPacket(destID, 0x00);	// 0x00 = no error
+
+									else if (statCode == 0x03)
+										encodeStdDibStatusReplyPacket(destID, 0x00);	// 0x00 = no error
+
+									else
+									{
+										printf("*** [0x%X] Unsupported statCode: 0x%X\n", destID, statCode);
+										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
+									}
+									break;
+								}
+
+								case eREADBLK:
+								case eEXTREADBLK:
+								{
+									if (destID == spID1)
+										readCnt1++;
+									else
+										readCnt2++;
+									// Compute block number
+									msbs = *(rcvdPacketPtr + 17);
+									if (cmdNum == eREADBLK)
+									{
+										blkNumLow = (*(rcvdPacketPtr + 20) & 0x7F) | ((msbs << 3) & 0x80);
+										blkNumMid = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
+										blkNumHi  = (*(rcvdPacketPtr + 22) & 0x7F) | ((msbs << 5) & 0x80);
+										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
+										printf("[0x%X] RB: %d\n", destID, blkNum);
+									}
+									else
+									{
+										blkNumLow = (*(rcvdPacketPtr + 19) & 0x7F) | ((msbs << 2) & 0x80);
+										blkNumMid = (*(rcvdPacketPtr + 20) & 0x7F) | ((msbs << 3) & 0x80);
+										blkNumHi  = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
+										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
+										printf("[0x%X] ExtRB: %d\n", destID, blkNum);
+									}
+
+									if (blkNum < NUM_BLOCKS)
+										encodeDataPacket(destID, 0x00, destDevice, blkNum);	// 0x00 = no error
+									else
+									{
+										printf("*** [0x%X] Bad Read BlkNum: %d\n", destID, blkNum);
+//										printPacket(destID);
+										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
+									}
+									break;
+								}
+
+								case eWRITEBLK:
+								case eEXTWRITEBLK:
+								{
+									if (destID == spID1)
+										writeCnt1++;
+									else
+										writeCnt2++;
+									// Compute block number
+									msbs = *(rcvdPacketPtr + 17);
+									if (cmdNum == 0x82)
+									{
+										blkNumLow = (*(rcvdPacketPtr + 20) & 0x7F) | ((msbs << 3) & 0x80);
+										blkNumMid = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
+										blkNumHi  = (*(rcvdPacketPtr + 22) & 0x7F) | ((msbs << 5) & 0x80);
+										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
+										printf("[0x%X] WB: %d\n", destID, blkNum);
+									}
+									else
+									{
+										blkNumLow = (*(rcvdPacketPtr + 19) & 0x7F) | ((msbs << 2) & 0x80);
+										blkNumMid = (*(rcvdPacketPtr + 20) & 0x7F) | ((msbs << 3) & 0x80);
+										blkNumHi  = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
+										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
+										printf("[0x%X] ExtWB: %d\n", destID, blkNum);
+									}
+
+									// Check blkNum here and send handshake or error status
+									if (blkNum < NUM_BLOCKS)				// a gross check
+									{
+										encodeHandshakeReplyPacket();
+									}
+									else
+									{
+										printf("*** [0x%X] Bad Write BlkNum: %d\n", destID, blkNum);
+										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
+									}
+									break;
+								}
+
+								case eCONTROL:
+								{
+									statCode = *(rcvdPacketPtr + 11);
+									printf("[0x%X] Control: 0x%X\n", destID, statCode);
+									encodeStdStatusReplyPacket(destID, 0x21);
+									break;
+								}
+
+								default:
+								{
+									printf("*** [0x%X] Unexpected cmdNum= 0x%X\n", destID, cmdNum);
+									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
+//									printPacket(destID);
+								}
+							}
+						}
+					}
+					else
+					{
+						// This should never happen
+						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, SPID2);
 					}
 
+					*pruWaitPtr = 0x00;
 					lastPruStatus = eRCVDPACK;
 				}
-
-//				destDevice = destID - spID1;					// theImages[0] or [1]
-
-//				printPacket(destID);
 				break;
 			}
 			case eSENDING:
@@ -238,7 +404,50 @@ int main(int argc, char *argv[])
 			default:
 				printf("*** Unexpected pruStatus: %d\n", pruStatus);
 		}
+		
+		
+//		loopCnt++;
+		if (loopCnt == 100000)
+		{
+			loopCnt = 0;
+			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
+		}
 	} while (running);
+
+	if (diskImage1Changed)
+	{
+		printf("FYI - disk image 1 was modified\n");
+/*		printf("\n - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
+		fgets(saveName, 64, stdin);
+		length = strlen(saveName);
+		if (length > 5)
+		{
+			strncpy(imageName, saveName, length-1);
+			saveDiskImage(0, imageName);
+		}
+		else if (length == 2)
+		{
+			printf("NEED TO IMPLEMENT\n");
+		}
+*/
+	}
+	if (diskImage2Changed)
+	{
+		printf("FYI - disk image 2 was modified\n");
+/*		printf(" - Save %s modifications? Enter name or <CR>: ", diskImages[1]);
+		fgets(saveName, 64, stdin);
+		length = strlen(saveName);
+		if (length > 5)
+		{
+			strncpy(imageName, saveName, length-1);
+			saveDiskImage(1, imageName);
+		}
+		else if (length == 2)
+		{
+			printf("NEED TO IMPLEMENT\n");
+		}
+*/
+	}
 
 	printf ("---Shutting down...\n");
 
