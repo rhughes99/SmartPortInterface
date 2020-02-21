@@ -1,6 +1,7 @@
 /*	SmartPort Controller TEST
-	Emulates two devuces
-	Shared memory example
+	Emulates two devices
+	Modern OS, shared memory
+	02/21/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,9 +24,8 @@ void encodeDataPacket(unsigned char srcID, unsigned char dataStat, unsigned char
 
 char decodeDataPacket(void);
 char checkCmdChecksum(void);
-void printPacket(unsigned char id);
+void printRcvdPacket(void);
 void debugDataPacket(void);
-
 
 // PRU Memory Locations
 #define PRU_ADDR		0x4A300000		// Start of PRU memory Page 163 am335x TRM
@@ -33,19 +33,17 @@ void debugDataPacket(void);
 #define PRU1_DRAM		0x02000
 //#define PRU_SHAREDMEM	0x10000			// Offset to shared memory
 
-//unsigned int *pru1DRAM_32int_ptr;		// Points to the start of PRU 1 usable RAM
-unsigned char *pru1DRAM_char_ptr;
+unsigned char *pru1DRAM_char_ptr;		// start of PRU1 usable memory
 //unsigned int *prusharedMem_32int_ptr;	// Points to the start of shared memory
 
-
-static unsigned char *pruStatusPtr;				// PRU -> Controller
-static unsigned char *busID1ptr;				// spID1 in PRU memory
-static unsigned char *busID2ptr;				// spID2 in PRU memory
-static unsigned char *pruWaitPtr;				// flag to pause PRU in PRU memory
-static unsigned char *rcvdPacketPtr;			// start of what A2 sent us
-static unsigned char *respPacketPtr;			// start of what we send to A2
-static unsigned char *initResp1Ptr;				// start of Init response 1
-static unsigned char *initResp2Ptr;				// start of Init response 2
+static unsigned char *pruStatusPtr;		// PRU -> Controller
+static unsigned char *busID1ptr;		// spID1 in PRU memory
+static unsigned char *busID2ptr;		// spID2 in PRU memory
+static unsigned char *pruWaitPtr;		// flag to pause PRU in PRU memory
+static unsigned char *rcvdPacketPtr;	// start of what A2 sent us
+static unsigned char *respPacketPtr;	// start of what we send to A2
+static unsigned char *initResp1Ptr;		// start of Init response 1
+static unsigned char *initResp2Ptr;		// start of Init response 2
 
 unsigned char running;
 #define NUM_BLOCKS	65536
@@ -82,6 +80,7 @@ int main(int argc, char *argv[])
 
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
+	enum WAIT {eWAIT_SET, eWAIT_GO, eWAIT_SKIP};
 
 	unsigned char *pru;		// start of PRU memory
 	int	fd;
@@ -137,7 +136,7 @@ int main(int argc, char *argv[])
 	printf("\n--- SmartPortIF running\n");
 	do
 	{
-		usleep(100);
+		usleep(20);		// was 100
 		pruStatus = *pruStatusPtr;
 		switch (pruStatus)
 		{
@@ -145,7 +144,7 @@ int main(int argc, char *argv[])
 			{
 				if (pruStatus != lastPruStatus)
 				{
-					printf("Idle\n");
+//					printf("Idle\n");
 					id = *busID1ptr;
 					if (id != spID1)
 					{
@@ -184,14 +183,14 @@ int main(int argc, char *argv[])
 			{
 				if (pruStatus != lastPruStatus)
 				{
-					printf("Enabled\n");
+//					printf("Enabled\n");
 					id = *busID1ptr;
 					if (id != spID1)
 					{
 						spID1 = id;
 						printf("\tspID1 changed to 0x%X\n", spID1);
 					}
-					id = *busID1ptr;
+					id = *busID2ptr;
 					if (id != spID2)
 					{
 						spID2 = id;
@@ -205,21 +204,24 @@ int main(int argc, char *argv[])
 			{	// PRU has a packet, command or data
 				if (pruStatus != lastPruStatus)
 				{
-					printf("Received packet\n");
+//					printf("Received packet\n");
 
 					destID = *(rcvdPacketPtr + 7);					// with msb = 1
 					type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
 					cmdNum = *(rcvdPacketPtr + 15);
 
-					printf("\tdestID = 0x%X\n", destID);
-					printf("\ttype   = 0x%X\n", type);
-					printf("\tcmdNm  = 0x%X\n", cmdNum);
+//					printf("\tdestID = 0x%X\n", destID);
+//					printf("\ttype   = 0x%X\n", type);
+//					printf("\tcmdNm  = 0x%X\n", cmdNum);
 
 					if (cmdNum == 0x85)								// an Init, we can ignore
+					{
+						printRcvdPacket();
 						break;
+					}
 
-					if (*pruWaitPtr > 0)
-						printf("PRU waiting for Controller...\n");
+//					if (*pruWaitPtr == eWAIT_SET)
+//						printf("PRU waiting for Controller...\n");
 
 					if ((destID == spID1) || (destID == spID2))
 					{
@@ -231,7 +233,7 @@ int main(int argc, char *argv[])
 
 						if (type == 0x82)				// data packet
 						{
-							// blkNum was set previously by WriteBlock command so 
+							// blkNum was set previously by WriteBlock command so
 							//  decode to tempBuffer[] and check status
 							if (decodeDataPacket() == 0)						// checksum ok
 							{
@@ -248,10 +250,10 @@ int main(int argc, char *argv[])
 							}
 							else
 							{
-								printf("*** [0x%X] Bad Write datablock status\n", destID);
+								printf("*** [0x%X] Bad checksum in received datablock %d\n", destID, blkNum);
 								encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
 
-//								debugDataPacket();
+								debugDataPacket();
 							}
 						}
 						else							// command packet
@@ -263,7 +265,7 @@ int main(int argc, char *argv[])
 								case eEXTSTATUS:
 								{
 									statCode = *(rcvdPacketPtr + 20) & 0x7F;
-									printf("[0x%X] Std Status: %d\n", destID, statCode);
+//									printf("[0x%X] Std Status: %d\n", destID, statCode);
 
 									if (statCode == 0x00)
 										encodeStdStatusReplyPacket(destID, 0x00);	// 0x00 = no error
@@ -294,7 +296,7 @@ int main(int argc, char *argv[])
 										blkNumMid = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
 										blkNumHi  = (*(rcvdPacketPtr + 22) & 0x7F) | ((msbs << 5) & 0x80);
 										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
-										printf("[0x%X] RB: %d\n", destID, blkNum);
+//										printf("[0x%X] RB: %d\n", destID, blkNum);
 									}
 									else
 									{
@@ -310,7 +312,7 @@ int main(int argc, char *argv[])
 									else
 									{
 										printf("*** [0x%X] Bad Read BlkNum: %d\n", destID, blkNum);
-//										printPacket(destID);
+//										printRcvdPacket();
 										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
 									}
 									break;
@@ -331,7 +333,7 @@ int main(int argc, char *argv[])
 										blkNumMid = (*(rcvdPacketPtr + 21) & 0x7F) | ((msbs << 4) & 0x80);
 										blkNumHi  = (*(rcvdPacketPtr + 22) & 0x7F) | ((msbs << 5) & 0x80);
 										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
-										printf("[0x%X] WB: %d\n", destID, blkNum);
+//										printf("[0x%X] WB: %d\n", destID, blkNum);
 									}
 									else
 									{
@@ -367,18 +369,19 @@ int main(int argc, char *argv[])
 								{
 									printf("*** [0x%X] Unexpected cmdNum= 0x%X\n", destID, cmdNum);
 									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
-//									printPacket(destID);
+//									printRcvdPacket();
 								}
 							}
 						}
+						*pruWaitPtr = eWAIT_GO;
 					}
 					else
 					{
 						// This should never happen
-						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, SPID2);
+						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, spID2);
+//						printRcvdPacket();
+						*pruWaitPtr = eWAIT_SKIP;
 					}
-
-					*pruWaitPtr = 0x00;
 					lastPruStatus = eRCVDPACK;
 				}
 				break;
@@ -387,7 +390,7 @@ int main(int argc, char *argv[])
 			{
 				if (pruStatus != lastPruStatus)
 				{
-					printf("Sending...\n");
+//					printf("Sending...\n");
 					lastPruStatus = eSENDING;
 				}
 				break;
@@ -396,7 +399,7 @@ int main(int argc, char *argv[])
 			{
 				if (pruStatus != lastPruStatus)
 				{
-					printf("Writing...\n");
+//					printf("Writing...\n");
 					lastPruStatus = eWRITING;
 				}
 				break;
@@ -404,8 +407,7 @@ int main(int argc, char *argv[])
 			default:
 				printf("*** Unexpected pruStatus: %d\n", pruStatus);
 		}
-		
-		
+
 //		loopCnt++;
 		if (loopCnt == 100000)
 		{
@@ -1044,13 +1046,26 @@ char checkCmdChecksum(void)
 }
 
 //____________________
-void printPacket(unsigned char id)
+void printRcvdPacket(void)
 {
-	printf("*** printPacket() is empty ***\n");
+	int i;
+	for (i=0; i<20; i++)
+		printf("\t%d 0x%X\n", i, *(rcvdPacketPtr+i));
+	printf("\n");
 }
 
 //____________________
 void debugDataPacket(void)
 {
-	printf("*** debugDataPacket() is empty ***\n");
+	int i;
+	for (i=6; i<512; i++)
+	{
+		if (*(rcvdPacketPtr+i) < 0x80)
+		{
+			printf("\t%d 0x%X\n", i-1, *(rcvdPacketPtr+i-1));
+			printf("\t%d 0x%X\n", i  , *(rcvdPacketPtr+i  ));
+			printf("\t%d 0x%X\n", i+1, *(rcvdPacketPtr+i+1));
+			break;
+		}
+	}
 }

@@ -14,16 +14,17 @@ How to run:
 3) Set enable toggle switch
 
 4) Insert SD card and mount
-	mount -v /dev/mmcblk1p1 /root/DiskImages
+	mount -v /dev/mmcblk0p1 /root/DiskImages, or
+	mount -t /dev/mmcblk0p1 /root/DiskImages
 
-4) make
+5) make
 
-5) gcc SmartPortControllerTest.c -o Controller
+6) gcc SmartPortControllerTest.c -o Controller
    gcc SmartPortController -o Controller
 
-6) ./Controller
+7) ./Controller
 
-7) Turn on A2	
+8) Turn on A2	
 
 
 
