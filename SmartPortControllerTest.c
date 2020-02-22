@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	02/21/2020
+	02/22/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,19 +28,45 @@ void printRcvdPacket(void);
 void debugDataPacket(void);
 
 // PRU Memory Locations
-#define PRU_ADDR		0x4A300000		// Start of PRU memory Page 163 am335x TRM
-#define PRU_LEN			0x80000			// Length of PRU memory
-#define PRU1_DRAM		0x02000
-//#define PRU_SHAREDMEM	0x10000			// Offset to shared memory
+#define PRU_ADDR			0x4A300000		// Start of PRU memory Page 163 am335x TRM
+#define PRU_LEN				0x80000			// Length of PRU memory
+#define PRU1_DRAM			0x02000
 
-unsigned char *pru1DRAM_char_ptr;		// start of PRU1 usable memory
-//unsigned int *prusharedMem_32int_ptr;	// Points to the start of shared memory
+// First 0x200 bytes of PRU RAM are STACK & HEAP
+#define STATUS_ADR			0x0300			// address of eBusState
+#define BUS_ID_1_ADR		0x0301			// address location of ID1
+#define BUS_ID_2_ADR		0x0302			// address location of ID2
+#define WAIT_ADR			0x0303			// address of WAIT, restart PRU after creating response
+#define WAIT_SET			0x00			// PRU -> Controller: waiting
+#define WAIT_GO				0x01			// Controller -> PRU: send response
+#define WAIT_SKIP			0x02			// Controller -> PRU: continue without sending response
 
-static unsigned char *pruStatusPtr;		// PRU -> Controller
-static unsigned char *busID1ptr;		// spID1 in PRU memory
-static unsigned char *busID2ptr;		// spID2 in PRU memory
-static unsigned char *pruWaitPtr;		// flag to pause PRU in PRU memory
-static unsigned char *rcvdPacketPtr;	// start of what A2 sent us
+#define RCVD_PACKET_ADR		0x0400			// 1048, command or data from A2
+#define RCVD_PBEGIN_ADR		0x0406			// Packet Begin
+#define RCVD_DEST_ADR		0x0407			// Destination ID
+#define RCVD_TYPE_ADR		0x0409			// Packet Type
+#define RCVD_CMD_ADR		0x040F			// CMD Number
+
+#define RESP_PACKET_ADR		0x0800			// 2024, all responses except Inits
+#define INIT_RESP_1_ADR		0x0C00			// 3072
+#define INIT_RESP_2_ADR		0x0E00			// 3584
+
+// Someday might move everything to shared memory
+//#define PRU_SHAREDMEM	0x10000				// Offset to shared memory
+//unsigned int *prusharedMem_32int_ptr;		// Points to the start of shared memory
+
+static unsigned char *pru1RAMptr;			// start of PRU1 memory
+static unsigned char *pruStatusPtr;			// PRU -> Controller
+static unsigned char *busID1ptr;			// spID1 in PRU memory
+static unsigned char *busID2ptr;			// spID2 in PRU memory
+static unsigned char *pruWaitPtr;			// flag to pause PRU in PRU memory
+static unsigned char *rcvdPacketPtr;		// start packet A2 sent us
+
+static unsigned char *rcvdPacketBeginPtr;
+static unsigned char *rcvdPacketDestPtr;
+static unsigned char *rcvdPacketTypePtr;
+static unsigned char *rcvdPacketCmdPtr;
+
 static unsigned char *respPacketPtr;	// start of what we send to A2
 static unsigned char *initResp1Ptr;		// start of Init response 1
 static unsigned char *initResp2Ptr;		// start of Init response 2
@@ -80,7 +106,7 @@ int main(int argc, char *argv[])
 
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
-	enum WAIT {eWAIT_SET, eWAIT_GO, eWAIT_SKIP};
+//	enum WAIT {eWAIT_SET, eWAIT_GO, eWAIT_SKIP};
 
 	unsigned char *pru;		// start of PRU memory
 	int	fd;
@@ -100,18 +126,31 @@ int main(int argc, char *argv[])
 	close(fd);
 
 	// Set memory pointers
-	pru1DRAM_char_ptr  = pru + PRU1_DRAM + 0x200;
-//	prusharedMem_32int_ptr = pru + PRU_SHAREDMEM/4;		// start of shared memory
+	pru1RAMptr 		= pru + PRU1_DRAM;
+//	pruStatusPtr	= pru1RAMptr + 0x0100;		// 0x200 + 0x100 =  768
+//	busID1ptr		= pruStatusPtr + 1;					// 0x301
+//	busID2ptr		= pruStatusPtr + 2;					// 0x302
+//	pruWaitPtr		= pruStatusPtr + 3;					// 0x303
 
-	pruStatusPtr	= pru1DRAM_char_ptr + 0x0100;		// 0x200 + 0x100 =  768
-	busID1ptr		= pruStatusPtr + 1;					// 0x301
-	busID2ptr		= pruStatusPtr + 2;					// 0x302
-	pruWaitPtr		= pruStatusPtr + 3;					// 0x303
+	pruStatusPtr	= pru1RAMptr + STATUS_ADR;
+	busID1ptr		= pru1RAMptr + BUS_ID_1_ADR;
+	busID2ptr		= pru1RAMptr + BUS_ID_2_ADR;
+	pruWaitPtr		= pru1RAMptr + WAIT_ADR;
 
-	rcvdPacketPtr	= pru1DRAM_char_ptr + 0x0200;		// 0x200 + 0x200 = 1024
-	respPacketPtr	= pru1DRAM_char_ptr + 0x0600;		// 0x200 + 0x600 = 2048
-	initResp1Ptr	= pru1DRAM_char_ptr + 0x0A00;		// 0x200 + 0xA00 = 3072
-	initResp2Ptr	= pru1DRAM_char_ptr + 0x0C00;		// 0x200 + 0xC00 = 3584
+//	rcvdPacketPtr	= pru1RAMptr + 0x0200;		// 0x200 + 0x200 = 1024
+//	respPacketPtr	= pru1RAMptr + 0x0600;		// 0x200 + 0x600 = 2048
+//	initResp1Ptr	= pru1RAMptr + 0x0A00;		// 0x200 + 0xA00 = 3072
+//	initResp2Ptr	= pru1RAMptr + 0x0C00;		// 0x200 + 0xC00 = 3584
+
+	rcvdPacketPtr		= pru1RAMptr + RCVD_PACKET_ADR;
+	rcvdPacketBeginPtr	= pru1RAMptr + RCVD_PBEGIN_ADR;
+	rcvdPacketDestPtr	= pru1RAMptr + RCVD_DEST_ADR;
+	rcvdPacketTypePtr	= pru1RAMptr + RCVD_TYPE_ADR;
+	rcvdPacketCmdPtr	= pru1RAMptr + RCVD_CMD_ADR;
+
+	respPacketPtr	= pru1RAMptr + RESP_PACKET_ADR;
+	initResp1Ptr	= pru1RAMptr + INIT_RESP_1_ADR;
+	initResp2Ptr	= pru1RAMptr + INIT_RESP_2_ADR;
 
 	loadDiskImages(diskImages[0], diskImages[1]);		// load both images
 	diskImage1Changed = 0;
@@ -206,21 +245,21 @@ int main(int argc, char *argv[])
 				{
 //					printf("Received packet\n");
 
-					destID = *(rcvdPacketPtr + 7);					// with msb = 1
-					type   = *(rcvdPacketPtr + 9);					// 0x80=Cmd, 0x81=Status, 0x82=Data
-					cmdNum = *(rcvdPacketPtr + 15);
+					destID = *rcvdPacketDestPtr;			// with msb = 1
+					type   = *rcvdPacketTypePtr;			// 0x80=Cmd, 0x81=Status, 0x82=Data
+					cmdNum = *rcvdPacketCmdPtr;
 
 //					printf("\tdestID = 0x%X\n", destID);
 //					printf("\ttype   = 0x%X\n", type);
 //					printf("\tcmdNm  = 0x%X\n", cmdNum);
 
-					if (cmdNum == 0x85)								// an Init, we can ignore
+					if (cmdNum == eINIT)					// an Init, we can ignore
 					{
 						printRcvdPacket();
 						break;
 					}
 
-//					if (*pruWaitPtr == eWAIT_SET)
+//					if (*pruWaitPtr == WAIT_SET)
 //						printf("PRU waiting for Controller...\n");
 
 					if ((destID == spID1) || (destID == spID2))
@@ -373,14 +412,14 @@ int main(int argc, char *argv[])
 								}
 							}
 						}
-						*pruWaitPtr = eWAIT_GO;
+						*pruWaitPtr = WAIT_GO;
 					}
 					else
 					{
 						// This should never happen
 						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, spID2);
 //						printRcvdPacket();
-						*pruWaitPtr = eWAIT_SKIP;
+						*pruWaitPtr = WAIT_SKIP;
 					}
 					lastPruStatus = eRCVDPACK;
 				}

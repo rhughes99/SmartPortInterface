@@ -1,9 +1,6 @@
-#include <stdint.h>
-#include <pru_cfg.h>
-#include "resource_table_empty.h"
-
-/*
-	02/21/2020
+/*	SmartPort PRU
+	Emulates two devices
+	Modern OS, shared memory
 
 	Inputs:
 		WDat	P8_45	R31_0
@@ -28,13 +25,26 @@
 		Sent packet start		0x800	2048
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
-*/
 
+	02/22/2020
+*/
+#include <stdint.h>
+#include <pru_cfg.h>
+#include "resource_table_empty.h"
+
+// First 0x200 bytes of PRU RAM are STACK & HEAP
 #define PRU0_DRAM		0x00000			// Offset to Data RAM
-// First 0x200 bytes of DRAM are STACK & HEAP
 volatile unsigned char *PRU1_RAM = (unsigned char *) PRU0_DRAM;
 
 // Fixed PRU Memory Locations
+#define STATUS_ADR			0x0300		// address of eBusState
+#define BUS_ID_1_ADR		0x0301		// address location of ID1
+#define BUS_ID_2_ADR		0x0302		// address location of ID2
+#define WAIT_ADR			0x0303		// address of WAIT, for Controller to tell us to continue
+#define WAIT_SET			0x00		// PRU -> Controller: waiting
+#define WAIT_GO				0x01		// Controller -> PRU: send response
+#define WAIT_SKIP			0x02		// Controller -> PRU: continue without sending response
+
 #define RCVD_PACKET_ADR		0x0400		// 1048, command or data from A2
 #define RCVD_PBEGIN_ADR		0x0406		// Packet Begin
 #define RCVD_DEST_ADR		0x0407		// Destination ID offset
@@ -43,15 +53,6 @@ volatile unsigned char *PRU1_RAM = (unsigned char *) PRU0_DRAM;
 #define RESP_PACKET_ADR		0x0800		// 2024, status or data, all responses except Inits
 #define INIT_RESP_1_ADR		0x0C00		// 3072
 #define INIT_RESP_2_ADR		0x0E00		// 3584
-
-#define STATUS				0x0300		// address of eBusState
-#define BUS_ID_1			0x0301		// address location of ID1
-#define BUS_ID_2			0x0302		// address location of ID2
-
-#define WAIT				0x0303		// address of WAIT, for Controller to tell us to continue
-#define WAIT_SET			0x00		// PRU -> Controller: waiting
-#define WAIT_GO				0x01		// Controller -> PRU: send response
-#define WAIT_SKIP			0x02		// Controller -> PRU: continue without sending response
 
 volatile register uint32_t __R30;
 volatile register uint32_t __R31;
@@ -104,37 +105,35 @@ int main(int argc, char *argv[])
 		switch (busState)
 		{
 			case eIDLE:
-				PRU1_RAM[STATUS] = eIDLE;
-				__R30 &= ~LED;		// LED off
-//				__R30 |=  OUTEN;	// float RDAT
-				__R30 |=  ACK;		// ACK = 1, ready to receive
+			{
+				PRU1_RAM[STATUS_ADR] = eIDLE;
+				__R30 &= ~LED;			// LED off
+//				__R30 |=  OUTEN;		// float RDAT
+				__R30 |=  ACK;			// ACK = 1, ready to receive
 				break;
-
+			}
 			case eRESET:
-				PRU1_RAM[STATUS] = eRESET;
+			{
+				PRU1_RAM[STATUS_ADR] = eRESET;
 				HandleReset();
 				break;
-
+			}
 			case eENABLED:
-				PRU1_RAM[STATUS] = eENABLED;
+			{
+				PRU1_RAM[STATUS_ADR] = eENABLED;
 				__R30 |= LED;			// LED on
 				__R30 |= ACK;			// ACK = 1, ready to receive
 
 				req = WaitForReq();		// 1 = REQ set, 0 = bus disabled
 				if (req)
 				{
-//					__R30 |= TEST;		// TEST = 1
-
 					ReceivePacket();	// receive packet & store in memory
-
 					ProcessPacket();	// either send Init or wait for Controller
-
-//					__R30 &= ~TEST;		// TEST = 0
 				}
 				break;
-
+			}
 			default:
-				PRU1_RAM[STATUS] = eUNKNOWN;
+				PRU1_RAM[STATUS_ADR] = eUNKNOWN;
 		}
 	}
 }
@@ -144,7 +143,6 @@ unsigned char WaitForReq(void)
 {
 	// Wait for REQ = 1 or bus disabled
 	// Return: 1 = REQ set, 0 = bus disabled
-
 	unsigned char done, result;
 
 	done = 0;
@@ -179,9 +177,9 @@ void HandleReset(void)
 	busID1 = 0xFF;		// set bus IDs to uninitialized values
 	busID2 = 0xFF;
 
-	PRU1_RAM[BUS_ID_1] = busID1;	// reset bus IDs for Controller
-	PRU1_RAM[BUS_ID_2] = busID2;
-	PRU1_RAM[WAIT] = 0x00;			// don't wait for Controller input
+	PRU1_RAM[BUS_ID_1_ADR] = busID1;	// reset bus IDs for Controller
+	PRU1_RAM[BUS_ID_2_ADR] = busID2;
+	PRU1_RAM[WAIT_ADR] = 0x00;				// don't wait for Controller input
 }
 
 //____________________
@@ -268,8 +266,7 @@ void ReceivePacket(void)
 			timingToggle = 0;
 		}
 	}
-
-	PRU1_RAM[STATUS] = eRCVDPACK;
+	PRU1_RAM[STATUS_ADR] = eRCVDPACK;
 }
 
 //____________________
@@ -289,17 +286,17 @@ void ProcessPacket(void)
 		SendInit(dest);
 	else
 	{
-		if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)		// quick sanity check???
+		if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)		// quick sanity check
 		{
-			__R30 &= ~ACK;	// ACK = 0, to tell A2 we are responding
+			__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
 
-			PRU1_RAM[WAIT] = WAIT_SET;			// tell  Controller
-			while(PRU1_RAM[WAIT] == WAIT_SET)	// and wait for go-ahead
+			PRU1_RAM[WAIT_ADR] = WAIT_SET;			// tell Controller
+			while(PRU1_RAM[WAIT_ADR] == WAIT_SET)	// and wait for go-ahead
 				__delay_cycles(1600);
 
-			if (PRU1_RAM[WAIT] == WAIT_GO)
+			if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
 			{
-//				__R30 &= ~ACK;					//  ACK = 0, to tell A2 we are respondiong
+//				__R30 &= ~ACK;					//  ACK = 0, tell A2 we are respondiong
 			SendPacket(RESP_PACKET_ADR);
 			}
 		}
@@ -317,8 +314,6 @@ void SendInit(unsigned char dest)
 
 	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
 
-//	__R30 |= TEST;		// TEST = 1
-
 	if (initCnt == 0)
 	{
 		PRU1_RAM[INIT_RESP_1_ADR+8] = dest;	// put ID in our response
@@ -334,7 +329,7 @@ void SendInit(unsigned char dest)
 
 		initCnt++;
 		SendPacket(INIT_RESP_1_ADR);
-		PRU1_RAM[BUS_ID_1] = dest;		// for Controller
+		PRU1_RAM[BUS_ID_1_ADR] = dest;		// for Controller
 	}
 	else if (initCnt == 1)
 	{
@@ -351,10 +346,8 @@ void SendInit(unsigned char dest)
 
 		initCnt++;
 		SendPacket(INIT_RESP_2_ADR);
-		PRU1_RAM[BUS_ID_2] = dest;		// for Controller
+		PRU1_RAM[BUS_ID_2_ADR] = dest;		// for Controller
 	}
-
-//	__R30 &= ~TEST;		// TEST = 0
 }
 
 //____________________
@@ -364,15 +357,12 @@ void SendPacket(unsigned int memPtr)
 
 	unsigned char byteInProgress, bitMask, sendDone;
 
-	PRU1_RAM[STATUS] = eSENDING;	// for Controller
+	PRU1_RAM[STATUS_ADR] = eSENDING;	// for Controller
 
 	while((__R31 & REQ) == REQ);	// wait for A2 to finish its send cycle, REQ=0
 
 	// Set up outputs
 	__R30 |= ACK;		// ACK = 1, ready to send
-//	__R30 &= ~OUTEN;	// clear OUTEN to enable RDAT
-//	__R30 &= ~RDAT;		// set to known value, 0
-
 	__R30 |= RDAT;		// set to know value, 1
 	__R30 &= ~OUTEN;	// clear OUTEN to enable RDAT
 
@@ -390,16 +380,12 @@ void SendPacket(unsigned int memPtr)
 
 		byteInProgress &= bitMask;
 		if (byteInProgress == bitMask)	// we have a 1
-//			__R30 |= RDAT;		// RDAT = 1
 			__R30 &= ~RDAT;		// RDAT = 0
 		else
-//			__R30 &= ~RDAT;		// RDAT still 0, for timing
 			__R30 |= RDAT;		// RDAT still 1, for timing
 
-//		__delay_cycles(300);	// 1.5 us
 		__delay_cycles(350);
 
-//		__R30 &= ~RDAT;			// RDAT = 0
 		__R30 |= RDAT;			// RDAR = 1
 
 		if (bitMask == 1)		// we just sent lsb so time for next byte
@@ -410,7 +396,6 @@ void SendPacket(unsigned int memPtr)
 		else
 			bitMask = bitMask >> 1;
 
-//		__delay_cycles(460);	// 2.3 us
 		__delay_cycles(410);
 	}
 
@@ -426,4 +411,3 @@ void SendPacket(unsigned int memPtr)
 
 //	while ((__R31 & REQ) == 0);
 }
-
