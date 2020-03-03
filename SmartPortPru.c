@@ -20,13 +20,14 @@
 		STATUS		0x300
 		Bus ID 1	0x301
 		Bus ID 2	0x302
+		Wait flag	0x303
 
 		Received packet start	0x400	1024
 		Sent packet start		0x800	2048
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
 
-	02/22/2020
+	03/03/2020
 */
 #include <stdint.h>
 #include <pru_cfg.h>
@@ -65,21 +66,21 @@ unsigned char initCnt, busID1, busID2;
 // Must be identical to SmartPortController.c
 typedef enum
 {
-	eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN
+	eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN, eERROR
 } eBusState;
 
 void			HandleReset(void);
 eBusState		GetBusState(void);
 unsigned char	WaitForReq(void);
 void			ReceivePacket(void);
+void			InsertBit(signed char bit);
 void			ProcessPacket(void);
 void			SendInit(unsigned char dest);
-void			SendPacket(unsigned int memPtr);
+void			SendPacket(char initFlag, unsigned int memPtr);
 
 //____________________
 int main(int argc, char *argv[])
 {
-	unsigned char req;
 	eBusState busState;
 
 	// Set I/O constants
@@ -124,8 +125,7 @@ int main(int argc, char *argv[])
 				__R30 |= LED;			// LED on
 				__R30 |= ACK;			// ACK = 1, ready to receive
 
-				req = WaitForReq();		// 1 = REQ set, 0 = bus disabled
-				if (req)
+				if (WaitForReq())		// 1 = REQ set, 0 = bus disabled
 				{
 					ReceivePacket();	// receive packet & store in memory
 					ProcessPacket();	// either send Init or wait for Controller
@@ -208,6 +208,130 @@ eBusState GetBusState(void)
 //____________________
 void ReceivePacket(void)
 {
+	unsigned char count, lastWDAT;
+
+	// Set up InsertBit()
+	InsertBit(-1);
+
+	while ((__R31 & WDAT) == WDAT);		// wait for WDAT to go low
+
+	while (1)
+	{
+		count = 0;
+		lastWDAT = __R31 & WDAT;
+		while ((__R31 & WDAT) == lastWDAT)
+		{
+			count++;
+			if (count > 65)	// was 64
+				return;
+
+			__delay_cycles(100);	// 0.5 us
+		}
+
+		// Convert  count into bit(s)
+		if (count < 10)			// 1
+		{
+			InsertBit(1);
+		}
+		else if (count < 17)	// 01
+		{
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else if (count < 24)	// 001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else if (count < 31)	// 0001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else if (count < 38)	// 0 0001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else if (count < 45)	// 00 0001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else if (count < 52)	// 000 0001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+		else					// 0000 0001
+		{
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(0);
+			InsertBit(1);
+		}
+	}
+}
+
+//____________________
+void InsertBit(signed char bit)
+{
+	// Insert bit into byteInProcess and put in RAM when byte completed
+	// If bit = -1, reset parameters (start of packet)
+
+	static unsigned char bitCnt, byteInProcess;
+	static unsigned int memoryPtr;
+
+	if (bit == -1)
+	{
+		bitCnt = 1;
+		byteInProcess = 0x02;		// we miss first 1 in byte 0
+		memoryPtr = RCVD_PACKET_ADR;
+	}
+	else
+	{
+		if (bit == 0)
+			byteInProcess &= 0xFE;	// clear LSB
+		else
+			byteInProcess |= 0x01;	// set LSB
+
+		if (bitCnt == 7)
+		{
+			PRU1_RAM[memoryPtr] = byteInProcess;
+			memoryPtr++;
+			bitCnt = 0;
+		}
+		else
+		{
+			byteInProcess = byteInProcess<<1;	// shift bits left
+			bitCnt++;
+		}
+	}
+}
+
+/*
+//____________________
+void ReceivePacket(void)
+{
 	// Receive packet from A2 and put into data memory, starting at RCVD_PACKET_ADR
 
 	unsigned char lastWDAT, byteInProcess, bitCnt, packetNotDone;
@@ -222,9 +346,9 @@ void ReceivePacket(void)
 	memoryPtr = RCVD_PACKET_ADR;
 
 	// Wait for WDATA to go low, our t0
-	while((__R31 & WDAT) == WDAT);
+	while ((__R31 & WDAT) == WDAT);
 
-	__delay_cycles(575);	// ~n us to sample in bit cell center
+	__delay_cycles(500);	// ~n us to sample in bit cell center
 
 	while (packetNotDone == 1)
 	{
@@ -248,27 +372,68 @@ void ReceivePacket(void)
 		}
 		else					// not done with this byte
 		{
-			byteInProcess = byteInProcess<<1;		// shift bits left
+			byteInProcess = byteInProcess<<1;	// shift bits left
 			bitCnt++;
 		}
 
-		// 766, 767, 768, 769 work for Init packet, with initial delay of 400
-//		__delay_cycles(768);
+		// Timing appears to be dependent on number of cases (!?)
+		//  Starting with 6 + default
+		// ~762, on average?
+		switch (timingToggle)
+		{
+			case 0:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
 
-		if (timingToggle == 0)
-		{
-			__delay_cycles(766);
-			timingToggle = 1;
-		}
-		else
-		{
-			__delay_cycles(764);
-			timingToggle = 0;
+			case 1:
+				__delay_cycles(760);
+				timingToggle++;
+				break;
+
+			case 2:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
+
+			case 3:
+				__delay_cycles(760);
+				timingToggle++;
+				break;
+
+			case 4:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
+
+			case 5:
+				__delay_cycles(760);
+				timingToggle++;
+				break;
+
+			case 6:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
+
+			case 7:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
+
+			case 8:
+				__delay_cycles(759);
+				timingToggle++;
+				break;
+
+			default:
+				__delay_cycles(759);
+				timingToggle = 0;
 		}
 	}
 	PRU1_RAM[STATUS_ADR] = eRCVDPACK;
 }
-
+*/
 //____________________
 void ProcessPacket(void)
 {
@@ -281,28 +446,24 @@ void ProcessPacket(void)
 	cmd  = PRU1_RAM[RCVD_CMD_ADR];
 	dest = PRU1_RAM[RCVD_DEST_ADR];		// this is our assigned ID in INIT packets
 
-	if ((cmd == 0x85) || (cmd == 0xF0))	// ???
+	if ((cmd == 0x85) || (cmd == 0xF0))	// WHY???
 //	if (cmd == 0x85)
 		SendInit(dest);
-	else
+	else if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)	// quick sanity check
 	{
-		if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)		// quick sanity check
-		{
-			__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
+		PRU1_RAM[STATUS_ADR] = eRCVDPACK;		// tell Controller packet received
 
-			PRU1_RAM[WAIT_ADR] = WAIT_SET;			// tell Controller
-			while(PRU1_RAM[WAIT_ADR] == WAIT_SET)	// and wait for go-ahead
-				__delay_cycles(1600);
+		__R30 &= ~ACK;			// ACK = 0, to tell A2 we are responding
 
-			if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
-			{
-//				__R30 &= ~ACK;					//  ACK = 0, tell A2 we are respondiong
-			SendPacket(RESP_PACKET_ADR);
-			}
-		}
-		// Otherwise just continue - really shouldn't ever get here!?
-//		__R30 |= ACK;	// ACK = 1
+		PRU1_RAM[WAIT_ADR] = WAIT_SET;			// tell Controller we are
+		while(PRU1_RAM[WAIT_ADR] == WAIT_SET)	// waiting for go-ahead
+			__delay_cycles(1600);
+
+		if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
+			SendPacket(0, RESP_PACKET_ADR);
 	}
+	else
+		PRU1_RAM[STATUS_ADR] = eERROR;	// tell Controller something is fishy
 }
 
 //____________________
@@ -328,7 +489,7 @@ void SendInit(unsigned char dest)
 		PRU1_RAM[INIT_RESP_1_ADR+20] = checkSumB;
 
 		initCnt++;
-		SendPacket(INIT_RESP_1_ADR);
+		SendPacket(1, INIT_RESP_1_ADR);
 		PRU1_RAM[BUS_ID_1_ADR] = dest;		// for Controller
 	}
 	else if (initCnt == 1)
@@ -345,21 +506,22 @@ void SendInit(unsigned char dest)
 		PRU1_RAM[INIT_RESP_2_ADR+20] = checkSumB;
 
 		initCnt++;
-		SendPacket(INIT_RESP_2_ADR);
+		SendPacket(1, INIT_RESP_2_ADR);
 		PRU1_RAM[BUS_ID_2_ADR] = dest;		// for Controller
 	}
 }
 
 //____________________
-void SendPacket(unsigned int memPtr)
+void SendPacket(char initFlag, unsigned int memPtr)
 {
 	// Send packet starting at memPtr, ending with 0x00
+	// initFlag == 1, we are sending init and handle ending differently
 
 	unsigned char byteInProgress, bitMask, sendDone;
 
 	PRU1_RAM[STATUS_ADR] = eSENDING;	// for Controller
 
-	while((__R31 & REQ) == REQ);	// wait for A2 to finish its send cycle, REQ=0
+	while((__R31 & REQ) == REQ);	// wait for A2 to finish its send cycle, REQ = 0
 
 	// Set up outputs
 	__R30 |= ACK;		// ACK = 1, ready to send
@@ -396,18 +558,18 @@ void SendPacket(unsigned int memPtr)
 		else
 			bitMask = bitMask >> 1;
 
-		__delay_cycles(410);
+//		__delay_cycles(420);
+		__delay_cycles(410);	// starting point
+//		__delay_cycles(400);
+//		__delay_cycles(390);
 	}
 
-	__R30 &= ~ACK;		//  ACK = 0, tell A2 we are done with this packet
-
-//	__delay_cycles(1600);	// n us, short delay?
+	__R30 &= ~ACK;			// ACK = 0, tell A2 we are done with this packet
 	__R30 |= OUTEN;			// float RDAT
-	__delay_cycles(1600);
-	// Note from previous version
-	// Can't just WBC r31.t1 (REQ) here - fails Init
-	__delay_cycles(3000);	// 15 us
 
+	if (initFlag == 1)
+		__delay_cycles(5000);	// 25 us
 
-//	while ((__R31 & REQ) == 0);
+	else
+		while ((__R31 & REQ) == REQ);	// wait for REQ = 0
 }

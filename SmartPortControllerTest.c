@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	02/22/2020
+	03/02/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,7 +86,8 @@ unsigned char tempBuffer[512];					// holds data from A2 till verified
 //const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
 //const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BigBlank.po"};
 
-const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/ZipChipUtil.po"};
+//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/ZipChipUtil.po"};
+const char *diskImages[] = {"IIGSSystem604/LiveInstall.po", "Large/ZipChipUtil.po"};
 
 // IDs provided by A2
 unsigned char spID1, spID2;
@@ -127,20 +128,11 @@ int main(int argc, char *argv[])
 
 	// Set memory pointers
 	pru1RAMptr 		= pru + PRU1_DRAM;
-//	pruStatusPtr	= pru1RAMptr + 0x0100;		// 0x200 + 0x100 =  768
-//	busID1ptr		= pruStatusPtr + 1;					// 0x301
-//	busID2ptr		= pruStatusPtr + 2;					// 0x302
-//	pruWaitPtr		= pruStatusPtr + 3;					// 0x303
 
 	pruStatusPtr	= pru1RAMptr + STATUS_ADR;
 	busID1ptr		= pru1RAMptr + BUS_ID_1_ADR;
 	busID2ptr		= pru1RAMptr + BUS_ID_2_ADR;
 	pruWaitPtr		= pru1RAMptr + WAIT_ADR;
-
-//	rcvdPacketPtr	= pru1RAMptr + 0x0200;		// 0x200 + 0x200 = 1024
-//	respPacketPtr	= pru1RAMptr + 0x0600;		// 0x200 + 0x600 = 2048
-//	initResp1Ptr	= pru1RAMptr + 0x0A00;		// 0x200 + 0xA00 = 3072
-//	initResp2Ptr	= pru1RAMptr + 0x0C00;		// 0x200 + 0xC00 = 3584
 
 	rcvdPacketPtr		= pru1RAMptr + RCVD_PACKET_ADR;
 	rcvdPacketBeginPtr	= pru1RAMptr + RCVD_PBEGIN_ADR;
@@ -248,19 +240,9 @@ int main(int argc, char *argv[])
 					destID = *rcvdPacketDestPtr;			// with msb = 1
 					type   = *rcvdPacketTypePtr;			// 0x80=Cmd, 0x81=Status, 0x82=Data
 					cmdNum = *rcvdPacketCmdPtr;
-
 //					printf("\tdestID = 0x%X\n", destID);
 //					printf("\ttype   = 0x%X\n", type);
 //					printf("\tcmdNm  = 0x%X\n", cmdNum);
-
-					if (cmdNum == eINIT)					// an Init, we can ignore
-					{
-						printRcvdPacket();
-						break;
-					}
-
-//					if (*pruWaitPtr == WAIT_SET)
-//						printf("PRU waiting for Controller...\n");
 
 					if ((destID == spID1) || (destID == spID2))
 					{
@@ -315,7 +297,8 @@ int main(int argc, char *argv[])
 									else
 									{
 										printf("*** [0x%X] Unsupported statCode: 0x%X\n", destID, statCode);
-										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
+//										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
+//										encodeStdStatusReplyPacket(destID, 0x00);	// 0x00 = no error
 									}
 									break;
 								}
@@ -416,7 +399,7 @@ int main(int argc, char *argv[])
 					}
 					else
 					{
-						// This should never happen
+						// A bus ID that is not ours - this should never happen
 						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, spID2);
 //						printRcvdPacket();
 						*pruWaitPtr = WAIT_SKIP;
@@ -514,8 +497,8 @@ void myDebug(int sig)
 	unsigned int i;
 
 	printf("\n");
-	for (i=0; i<30; i++)
-		printf("%d 0x%X\n", i, *(rcvdPacketPtr + i));
+	for (i=0; i<32; i++)
+		printf("%d\t0x%X\n", i, *(rcvdPacketPtr + i));
 
 /*	printf("0 %X [FF]\n", *rcvdPacketPtr);
 	printf("1 %X [3F]\n", *(rcvdPacketPtr+1));
@@ -1071,7 +1054,6 @@ char checkCmdChecksum(void)
 
 	packetCS = *(rcvdPacketPtr+25) & ((*(rcvdPacketPtr+26) << 1) | 0x01);
 
-//	printf("checksum: computed= 0x%X\tpacket= 0x%X\n\n", checksum, packetCS);
 	if (checksum == packetCS)
 	{
 //		printf("GOOD checksum\n");
@@ -1079,7 +1061,7 @@ char checkCmdChecksum(void)
 	}
 	else
 	{
-		printf("*** BAD checksum\n");
+		printf("*** checkCmdChecksum() reports BAD checksum\n");
 		return 1;
 	}
 }
@@ -1097,7 +1079,7 @@ void printRcvdPacket(void)
 void debugDataPacket(void)
 {
 	int i;
-	for (i=6; i<512; i++)
+	for (i=6; i<605; i++)
 	{
 		if (*(rcvdPacketPtr+i) < 0x80)
 		{
