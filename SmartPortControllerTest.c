@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	03/02/2020
+	03/03/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +19,7 @@ void saveDiskImage(unsigned char image, const char *fileName);
 void encodeInitReplyPackets(void);
 void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat);
 void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat);
-void encodeHandshakeReplyPacket(void);
+//void encodeHandshakeReplyPacket(void);
 void encodeDataPacket(unsigned char srcID, unsigned char dataStat, unsigned char device, unsigned int block);
 
 char decodeDataPacket(void);
@@ -102,7 +102,7 @@ int main(int argc, char *argv[])
 	char saveName[64], imageName[64];
 	size_t length;
 
-	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
+	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN, eERROR};
 	enum pruStatuses pruStatus, lastPruStatus;
 
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
@@ -276,6 +276,7 @@ int main(int argc, char *argv[])
 
 								debugDataPacket();
 							}
+							*pruWaitPtr = WAIT_GO;
 						}
 						else							// command packet
 						{
@@ -300,6 +301,7 @@ int main(int argc, char *argv[])
 //										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
 //										encodeStdStatusReplyPacket(destID, 0x00);	// 0x00 = no error
 									}
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -337,6 +339,7 @@ int main(int argc, char *argv[])
 //										printRcvdPacket();
 										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
 									}
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -367,15 +370,16 @@ int main(int argc, char *argv[])
 									}
 
 									// Check blkNum here and send handshake or error status
-									if (blkNum < NUM_BLOCKS)				// a gross check
-									{
-										encodeHandshakeReplyPacket();
-									}
-									else
-									{
-										printf("*** [0x%X] Bad Write BlkNum: %d\n", destID, blkNum);
-										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
-									}
+//									if (blkNum < NUM_BLOCKS)				// a gross check
+//									{
+//										encodeHandshakeReplyPacket();
+//									}
+//									else
+//									{
+//										printf("*** [0x%X] Bad Write BlkNum: %d\n", destID, blkNum);
+//										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
+//									}
+									*pruWaitPtr = WAIT_SKIP
 									break;
 								}
 
@@ -384,6 +388,7 @@ int main(int argc, char *argv[])
 									statCode = *(rcvdPacketPtr + 11);
 									printf("[0x%X] Control: 0x%X\n", destID, statCode);
 									encodeStdStatusReplyPacket(destID, 0x21);
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -391,11 +396,11 @@ int main(int argc, char *argv[])
 								{
 									printf("*** [0x%X] Unexpected cmdNum= 0x%X\n", destID, cmdNum);
 									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
+									*pruWaitPtr = WAIT_GO;
 //									printRcvdPacket();
 								}
 							}
 						}
-						*pruWaitPtr = WAIT_GO;
 					}
 					else
 					{
@@ -424,6 +429,11 @@ int main(int argc, char *argv[])
 //					printf("Writing...\n");
 					lastPruStatus = eWRITING;
 				}
+				break;
+			}
+			case eERROR:
+			{
+				printf("*** PRU detected an error (something fishy)!?\n");
 				break;
 			}
 			default:
@@ -623,7 +633,7 @@ void saveDiskImage(unsigned char image, const char *fileName)
 }
 
 //____________________
-void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
+void (unsigned char srcID, unsigned char dataStat)
 {
 	// Reply to init and standard status commands with Statcode = 0x00
 	// Assumes srcID has MSB set
@@ -919,6 +929,68 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		*(respPacketPtr + 42) = 0x80;
 	}
 
+/*	{
+													// 32 MB  - 0x010000 (or 0x00FFFF ???)
+		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
+		*(respPacketPtr + 15) = 0xF0;				// device status: 1110 1000, read/write
+		checksum ^= 0xF0;
+		*(respPacketPtr + 16) = 0x80;				// block size low byte: 0x00
+		*(respPacketPtr + 17) = 0x80;				// block size mid byte: 0x00
+		*(respPacketPtr + 18) = 0x81;				// block size high byte: 0x01
+		checksum ^= 0x01;
+
+		*(respPacketPtr + 19) = 0x80;				// GRP1 MSBs
+		*(respPacketPtr + 20) = 0x8A;				// ID string length, 10 chars
+		checksum ^= 0x0A;
+		*(respPacketPtr + 21) = 'B' | 0x80;			// ID string, 16 chars total
+		checksum ^= 'B';
+		*(respPacketPtr + 22) = 'e' | 0x80;
+		checksum ^= 'e';
+		*(respPacketPtr + 23) = 'a' | 0x80;
+		checksum ^= 'a';
+		*(respPacketPtr + 24) = 'g' | 0x80;
+		checksum ^= 'g';
+		*(respPacketPtr + 25) = 'l' | 0x80;
+		checksum ^= 'l';
+		*(respPacketPtr + 26) = 'e' | 0x80;
+		checksum ^= 'e';
+
+		*(respPacketPtr + 27) = 0x80;				// GRP2 MSBs
+		*(respPacketPtr + 28) = 'B' | 0x80;
+		checksum ^= 'B';
+		*(respPacketPtr + 29) = 'o' | 0x80;
+		checksum ^= 'o';
+		*(respPacketPtr + 30) = 'n' | 0x80;
+		checksum ^= 'n';
+		*(respPacketPtr + 31) = 'e' | 0x80;
+		checksum ^= 'e';
+		*(respPacketPtr + 32) = '2' | 0x80;
+		checksum ^= '2';
+		*(respPacketPtr + 33) = ' ' | 0x80;
+		checksum ^= 0x20;
+		*(respPacketPtr + 34) = ' ' | 0x80;
+		checksum ^= 0x20;
+
+		// Pretending to be a non-removable hard disk
+		*(respPacketPtr + 35) = 0x80;				// GRP3 MSBs: 000 0000
+		*(respPacketPtr + 36) = ' ' | 0x80;
+		checksum ^= 0x20;
+		*(respPacketPtr + 37) = ' ' | 0x80;
+		checksum ^= 0x20;
+		*(respPacketPtr + 38) = ' ' | 0x80;
+		checksum ^= 0x20;
+
+		*(respPacketPtr + 39) = 0x82;				// device type: 0x02 = Hard disk
+		checksum ^= 0x02;
+		*(respPacketPtr + 40) = 0xA0;				// device subtype: 0x20 = not removable
+		checksum ^= 0x20;
+
+		*(respPacketPtr + 41) = 0x82;				// firmware version, 2 bytes
+		checksum ^= 0x02;
+		*(respPacketPtr + 42) = 0x80;
+	}
+*/
+
 	*(respPacketPtr + 43) =  checksum       | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 44) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
 	*(respPacketPtr + 45) = 0xC8;					// PEND
@@ -926,11 +998,11 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 }
 
 //____________________
-void encodeHandshakeReplyPacket(void)
-{
+//void encodeHandshakeReplyPacket(void)
+//{
 	// Creates zero-length message; used when all we want to do is handshake with A2
-	*(respPacketPtr+6) = 0x00;
-}
+//	*(respPacketPtr+6) = 0x00;
+//}
 
 //____________________
 void encodeDataPacket(unsigned char srcID, unsigned char dataStat, unsigned char device, unsigned int block)

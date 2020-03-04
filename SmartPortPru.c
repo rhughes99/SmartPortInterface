@@ -457,7 +457,7 @@ void ProcessPacket(void)
 
 		PRU1_RAM[WAIT_ADR] = WAIT_SET;			// tell Controller we are
 		while(PRU1_RAM[WAIT_ADR] == WAIT_SET)	// waiting for go-ahead
-			__delay_cycles(1600);
+			__delay_cycles(1600);				// 8 us
 
 		if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
 			SendPacket(0, RESP_PACKET_ADR);
@@ -473,7 +473,7 @@ void SendInit(unsigned char dest)
 
 	unsigned char finalCheckSum, checkSumA, checkSumB;
 
-	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
+	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding RMH
 
 	if (initCnt == 0)
 	{
@@ -509,6 +509,8 @@ void SendInit(unsigned char dest)
 		SendPacket(1, INIT_RESP_2_ADR);
 		PRU1_RAM[BUS_ID_2_ADR] = dest;		// for Controller
 	}
+	else
+		PRU1_RAM[STATUS_ADR] = eERROR;		// tell Controller something is fishy
 }
 
 //____________________
@@ -546,7 +548,7 @@ void SendPacket(char initFlag, unsigned int memPtr)
 		else
 			__R30 |= RDAT;		// RDAT still 1, for timing
 
-		__delay_cycles(350);
+		__delay_cycles(350);	// 1.75 us
 
 		__R30 |= RDAT;			// RDAR = 1
 
@@ -558,10 +560,10 @@ void SendPacket(char initFlag, unsigned int memPtr)
 		else
 			bitMask = bitMask >> 1;
 
-//		__delay_cycles(420);
-		__delay_cycles(410);	// starting point
+//		__delay_cycles(420);	// 2.10 us
+		__delay_cycles(410);	// 2.05 us starting point
 //		__delay_cycles(400);
-//		__delay_cycles(390);
+//		__delay_cycles(390);	// 1.95 us
 	}
 
 	__R30 &= ~ACK;			// ACK = 0, tell A2 we are done with this packet

@@ -42,11 +42,3 @@ RDAT	P8_39
 ACK		P8_40	// 1=ready to send/receive
 LED		P8_27
 TEST	P8_29
-
-
-To Run:
-source setup.sh							- to set some parameters and configure I/O pins
-gcc SmartPortController -o Controller	- to compile Controller
-make									- to compile PRU code and install and start
-./Controller							- to start Controller
-
