@@ -21,13 +21,14 @@
 		Bus ID 1	0x301
 		Bus ID 2	0x302
 		Wait flag	0x303
+		Error		0x304
 
 		Received packet start	0x400	1024
 		Sent packet start		0x800	2048
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
 
-	03/03/2020
+	03/06/2020
 */
 #include <stdint.h>
 #include <pru_cfg.h>
@@ -39,16 +40,18 @@ volatile unsigned char *PRU1_RAM = (unsigned char *) PRU0_DRAM;
 
 // Fixed PRU Memory Locations
 #define STATUS_ADR			0x0300		// address of eBusState
-#define BUS_ID_1_ADR		0x0301		// address location of ID1
-#define BUS_ID_2_ADR		0x0302		// address location of ID2
+#define BUS_ID_1_ADR		0x0301		// address of ID1
+#define BUS_ID_2_ADR		0x0302		// address of ID2
 #define WAIT_ADR			0x0303		// address of WAIT, for Controller to tell us to continue
 #define WAIT_SET			0x00		// PRU -> Controller: waiting
 #define WAIT_GO				0x01		// Controller -> PRU: send response
 #define WAIT_SKIP			0x02		// Controller -> PRU: continue without sending response
+#define ERROR_ADR			0x0304		// address of error code
 
 #define RCVD_PACKET_ADR		0x0400		// 1048, command or data from A2
 #define RCVD_PBEGIN_ADR		0x0406		// Packet Begin
 #define RCVD_DEST_ADR		0x0407		// Destination ID offset
+#define RCVD_TYPE_ADR		0x0409		// Type, 0x80=Cmd, 0x81=Status, 0x82=Data
 #define RCVD_CMD_ADR		0x040F		// CMD number offset
 
 #define RESP_PACKET_ADR		0x0800		// 2024, status or data, all responses except Inits
@@ -66,17 +69,22 @@ unsigned char initCnt, busID1, busID2;
 // Must be identical to SmartPortController.c
 typedef enum
 {
-	eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN, eERROR
+	eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN
 } eBusState;
+typedef enum
+{
+	eNOERROR, eERROR1, eERROR2, eERROR3
+} ePruErrors;
 
-void			HandleReset(void);
-eBusState		GetBusState(void);
-unsigned char	WaitForReq(void);
-void			ReceivePacket(void);
-void			InsertBit(signed char bit);
-void			ProcessPacket(void);
-void			SendInit(unsigned char dest);
-void			SendPacket(char initFlag, unsigned int memPtr);
+void		HandleReset(void);
+eBusState	GetBusState(void);
+char		WaitForReq(void);
+void		ReceivePacket(void);
+void		InsertBit(signed char bit);
+void		ProcessPacket(void);
+void		SendInit1(unsigned char dest);
+void		SendInit2(unsigned char dest);
+void		SendPacket(char initFlag, unsigned int memPtr);
 
 //____________________
 int main(int argc, char *argv[])
@@ -109,7 +117,6 @@ int main(int argc, char *argv[])
 			{
 				PRU1_RAM[STATUS_ADR] = eIDLE;
 				__R30 &= ~LED;			// LED off
-//				__R30 |=  OUTEN;		// float RDAT
 				__R30 |=  ACK;			// ACK = 1, ready to receive
 				break;
 			}
@@ -139,7 +146,7 @@ int main(int argc, char *argv[])
 }
 
 //____________________
-unsigned char WaitForReq(void)
+char WaitForReq(void)
 {
 	// Wait for REQ = 1 or bus disabled
 	// Return: 1 = REQ set, 0 = bus disabled
@@ -179,7 +186,8 @@ void HandleReset(void)
 
 	PRU1_RAM[BUS_ID_1_ADR] = busID1;	// reset bus IDs for Controller
 	PRU1_RAM[BUS_ID_2_ADR] = busID2;
-	PRU1_RAM[WAIT_ADR] = 0x00;				// don't wait for Controller input
+	PRU1_RAM[WAIT_ADR]     = 0x00;		// don't wait for Controller input
+	PRU1_RAM[ERROR_ADR]    = eNOERROR;
 }
 
 //____________________
@@ -439,78 +447,102 @@ void ProcessPacket(void)
 {
 	// If packet is Init, immediately send Init response
 	// Otherwise, tell Controller and wait for instructions
-	// Do we assume packet is always for us?
 
-	unsigned char cmd, dest;
+	unsigned char dest, cmd;
 
-	cmd  = PRU1_RAM[RCVD_CMD_ADR];
-	dest = PRU1_RAM[RCVD_DEST_ADR];		// this is our assigned ID in INIT packets
-
-	if ((cmd == 0x85) || (cmd == 0xF0))	// WHY???
-//	if (cmd == 0x85)
-		SendInit(dest);
-	else if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)	// quick sanity check
+	if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)
 	{
-		PRU1_RAM[STATUS_ADR] = eRCVDPACK;		// tell Controller packet received
+		// It's a legitimate packet (maybe?)
+		dest = PRU1_RAM[RCVD_DEST_ADR];			// our assigned ID in INIT packets
+//		type = PRU1_RAM[RCVD_TYPE_ADR];
+		cmd  = PRU1_RAM[RCVD_CMD_ADR];			// for command packetss only!
 
-		__R30 &= ~ACK;			// ACK = 0, to tell A2 we are responding
+		// Bus initialization is first priority, assume it's a command
+		if (initCnt < 2)
+		{
+			if ((cmd == 0x85) || (cmd == 0xF0))	// Init, deal with three cases???
+//			if (cmd == 0x85)
+			{
+				if (initCnt == 0)
+				{
+					SendInit1(dest);
+					initCnt = 1;
+				}
+				else if (initCnt == 1)
+				{
+					SendInit2(dest);
+					initCnt = 8;	// not 0 or 1
+				}
+				else
+					PRU1_RAM[ERROR_ADR] = eERROR1;
+			}
+		}
+		else if ((dest == busID1) || (dest == busID2))	// we are inited
+		{
+			PRU1_RAM[STATUS_ADR] = eRCVDPACK;		// tell Controller packet received
 
-		PRU1_RAM[WAIT_ADR] = WAIT_SET;			// tell Controller we are
-		while(PRU1_RAM[WAIT_ADR] == WAIT_SET)	// waiting for go-ahead
-			__delay_cycles(1600);				// 8 us
+			__R30 &= ~ACK;			// ACK = 0, to tell A2 we are responding
 
-		if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
-			SendPacket(0, RESP_PACKET_ADR);
+			PRU1_RAM[WAIT_ADR] = WAIT_SET;			// wait for Controller's response
+			while (PRU1_RAM[WAIT_ADR] == WAIT_SET)
+				__delay_cycles(1600);				// 8 us
+
+			if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
+				SendPacket(0, RESP_PACKET_ADR);
+		}
+		else
+			PRU1_RAM[ERROR_ADR] = eERROR2;
 	}
 	else
-		PRU1_RAM[STATUS_ADR] = eERROR;	// tell Controller something is fishy
+		PRU1_RAM[ERROR_ADR] = eERROR3;
 }
 
 //____________________
-void SendInit(unsigned char dest)
+void SendInit1(unsigned char dest)
 {
-	// Send first or second Init packet, based on initCnt
+	// Send first Init packet
+	unsigned char finalChecksum, checksumA, checksumB;
 
-	unsigned char finalCheckSum, checkSumA, checkSumB;
+	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
 
-	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding RMH
+	PRU1_RAM[INIT_RESP_1_ADR+8] = dest;	// put ID in our response
 
-	if (initCnt == 0)
-	{
-		PRU1_RAM[INIT_RESP_1_ADR+8] = dest;	// put ID in our response
+	// Compute checksum; Controller started
+	finalChecksum = PRU1_RAM[INIT_RESP_1_ADR+19] ^ dest;
 
-		// Compute checksum; Controller started
-		finalCheckSum = PRU1_RAM[INIT_RESP_1_ADR+19] ^ dest;
+	checksumA = finalChecksum | 0xAA;
+	checksumB = (finalChecksum >> 1) | 0xAA;
 
-		checkSumA = finalCheckSum | 0xAA;
-		checkSumB = (finalCheckSum >> 1) | 0xAA;
+	PRU1_RAM[INIT_RESP_1_ADR+19] = checksumA;
+	PRU1_RAM[INIT_RESP_1_ADR+20] = checksumB;
 
-		PRU1_RAM[INIT_RESP_1_ADR+19] = checkSumA;
-		PRU1_RAM[INIT_RESP_1_ADR+20] = checkSumB;
+	SendPacket(1, INIT_RESP_1_ADR);
+	busID1 = dest;
+	PRU1_RAM[BUS_ID_1_ADR] = dest;		// for Controller
+}
 
-		initCnt++;
-		SendPacket(1, INIT_RESP_1_ADR);
-		PRU1_RAM[BUS_ID_1_ADR] = dest;		// for Controller
-	}
-	else if (initCnt == 1)
-	{
-		PRU1_RAM[INIT_RESP_2_ADR+8] = dest;	// put ID in our response
+//____________________
+void SendInit2(unsigned char dest)
+{
+	// Send second Init packet
+	unsigned char finalChecksum, checksumA, checksumB;
 
-		// Compute checksum; Controller started
-		finalCheckSum = PRU1_RAM[INIT_RESP_2_ADR+19] ^ dest;
+	__R30 &= ~ACK;		// ACK = 0, to tell A2 we are responding
 
-		checkSumA = finalCheckSum | 0xAA;
-		checkSumB = (finalCheckSum >> 1) | 0xAA;
+	PRU1_RAM[INIT_RESP_2_ADR+8] = dest;	// put ID in our response
 
-		PRU1_RAM[INIT_RESP_2_ADR+19] = checkSumA;
-		PRU1_RAM[INIT_RESP_2_ADR+20] = checkSumB;
+	// Compute checksum; Controller started
+	finalChecksum = PRU1_RAM[INIT_RESP_2_ADR+19] ^ dest;
 
-		initCnt++;
-		SendPacket(1, INIT_RESP_2_ADR);
-		PRU1_RAM[BUS_ID_2_ADR] = dest;		// for Controller
-	}
-	else
-		PRU1_RAM[STATUS_ADR] = eERROR;		// tell Controller something is fishy
+	checksumA = finalChecksum | 0xAA;
+	checksumB = (finalChecksum >> 1) | 0xAA;
+
+	PRU1_RAM[INIT_RESP_2_ADR+19] = checksumA;
+	PRU1_RAM[INIT_RESP_2_ADR+20] = checksumB;
+
+	SendPacket(1, INIT_RESP_2_ADR);
+	busID2 = dest;
+	PRU1_RAM[BUS_ID_2_ADR] = dest;		// for Controller
 }
 
 //____________________
@@ -560,6 +592,7 @@ void SendPacket(char initFlag, unsigned int memPtr)
 		else
 			bitMask = bitMask >> 1;
 
+		// send timing experiments; all seem to work
 //		__delay_cycles(420);	// 2.10 us
 		__delay_cycles(410);	// 2.05 us starting point
 //		__delay_cycles(400);
