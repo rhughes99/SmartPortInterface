@@ -19,8 +19,8 @@ How to run:
 
 5) make
 
-6) gcc SmartPortControllerTest.c -o Controller
-   gcc SmartPortController -o Controller
+6) gcc SmartPortController.c -o Controller
+   gcc SmartPortControllerTest.c -o Controller
 
 7) ./Controller
 

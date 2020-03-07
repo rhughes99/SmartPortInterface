@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	03/06/2020
+	03/07/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,6 +191,9 @@ int main(int argc, char *argv[])
 
 			case eERROR3:
 				printf("*** ERROR3 detected\n");
+				printf("\tMy IDs: 0x%X\t0x%X\n", *busID1ptr, *busID2ptr);
+				printf("\tDEST = 0x%X\n", *rcvdPacketDestPtr);
+				printf("\tCMD  = 0x%X\n", *rcvdPacketCmdPtr);
 				*pruErrorPtr = eNOERROR;
 				break;
 
@@ -329,7 +332,6 @@ int main(int argc, char *argv[])
 									{
 										printf("*** [0x%X] Unsupported statCode: 0x%X\n", destID, statCode);
 										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
-//										encodeStdStatusReplyPacket(destID, 0x00);	// 0x00 = no error
 									}
 									*pruWaitPtr = WAIT_GO;
 									break;
@@ -409,7 +411,7 @@ int main(int argc, char *argv[])
 								{
 									statCode = *(rcvdPacketPtr + 11);
 									printf("[0x%X] Control: 0x%X\n", destID, statCode);
-									encodeStdStatusReplyPacket(destID, 0x21);
+									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
 									*pruWaitPtr = WAIT_GO;
 									break;
 								}
@@ -428,7 +430,7 @@ int main(int argc, char *argv[])
 					{
 						// A bus ID that is not ours - this should never happen
 						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, spID2);
-						printRcvdPacket();
+//						printRcvdPacket();
 						*pruWaitPtr = WAIT_SKIP;
 					}
 					lastPruStatus = eRCVDPACK;
@@ -640,7 +642,6 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 {
 	// Reply to init and standard status commands with Statcode = 0x00
 	// Assumes srcID has MSB set
-	// spID1 is big HD, spID2 is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -662,29 +663,14 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 
 	for (i=7; i<14; i++)
 		checksum ^= *(respPacketPtr+i);
-
-//rmh	if (srcID == spID1)
-	if (1)
-	{											// 32 MB  - 0x010000 (or 0x00FFFF ???)
-		*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;			// device status: 1111 1000, read/write
-		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0x80;			// block size low byte: 0x00
-		*(respPacketPtr + 17) = 0x80;			// block size mid byte: 0x00
-		*(respPacketPtr + 18) = 0x81;			// block size high byte: 0x01
-		checksum ^= 0x01;
-	}
-	else
-	{											// 800kB  - 0x000640
-		*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;			// device status: 1111 0000, read/write
-		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0xC0;			// block size low byte: 0x40
-		checksum ^= 0x40;
-		*(respPacketPtr + 17) = 0x86;			// block size mid byte: 0x06
-		checksum ^= 0x06;
-		*(respPacketPtr + 18) = 0x80;			// block size high byte: 0x00
-	}
+											// 32 MB - 0x010000 = 65536 blocks
+	*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
+	*(respPacketPtr + 15) = 0xF0;			// device status: 1111 1000, read/write
+	checksum ^= 0xF0;
+	*(respPacketPtr + 16) = 0x80;			// block size low byte: 0x00
+	*(respPacketPtr + 17) = 0x80;			// block size mid byte: 0x00
+	*(respPacketPtr + 18) = 0x81;			// block size high byte: 0x01
+	checksum ^= 0x01;
 
 	*(respPacketPtr + 19) =  checksum	    | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 20) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
@@ -700,7 +686,6 @@ void encodeInitReplyPackets(void)
 	// This routine computes checksum for all elements except source ID
 	//  and puts it in Ptr+19. PRU completes calculation and puts
 	//  result in Ptr+19 & Ptr+20
-	// First device is big HD, second is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -723,8 +708,7 @@ void encodeInitReplyPackets(void)
 
 	for (i=7; i<14; i++)
 		checksum ^= *(initResp1Ptr+i);
-
-												// 32 MB  - 0x010000 (or 0x00FFFF ???)
+												// 32 MB - 0x010000 = 65536 blocks
 	*(initResp1Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
 	*(initResp1Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
 	checksum ^= 0xF0;
@@ -761,24 +745,13 @@ void encodeInitReplyPackets(void)
 	checksum = 0;
 	for (i=7; i<14; i++)
 		checksum ^= *(initResp2Ptr+i);
-
-												// 800kB  - 0x000640
-//	*(initResp2Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
-//	*(initResp2Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
-//	checksum ^= 0xF0;
-//	*(respPacketPtr + 16) = 0xC0;				// block size low byte: 0x40
-//	checksum ^= 0x40;
-//	*(respPacketPtr + 17) = 0x86;				// block size mid byte: 0x06
-//	checksum ^= 0x06;
-//	*(respPacketPtr + 18) = 0x80;				// block size high byte: 0x00
-
-												// 32 MB
-	*(initResp2Ptr + 14) = 0xC0;
-	*(initResp2Ptr + 15) = 0xF0;
+												// 32 MB - 0x010000 = 65536 blocks
+	*(initResp2Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
+	*(initResp2Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
 	checksum ^= 0xF0;
-	*(initResp2Ptr + 16) = 0x80;
-	*(initResp2Ptr + 17) = 0x80;
-	*(initResp2Ptr + 18) = 0x81;
+	*(initResp2Ptr + 16) = 0x80;				// block size low byte: 0x00
+	*(initResp2Ptr + 17) = 0x80;				// block size mid byte: 0x00
+	*(initResp2Ptr + 18) = 0x81;				// block size high byte: 0x01
 	checksum ^= 0x01;
 
 //	*(initResp2Ptr + 19) =  checksum	   | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
@@ -795,7 +768,6 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 {
 	// Reply to standard status commands with Statcode = 0x03
 	// Assumes srcID has MSB set
-	// spID1 is big HD, spID2 is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -818,10 +790,9 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 	for (i=7; i<14; i++)
 		checksum ^= *(respPacketPtr+i);
 
-//rmh	if (srcID == spID1)
-	if (1)
+	if (srcID == spID1)
 	{
-													// 32 MB  - 0x010000 (or 0x00FFFF ???)
+													// 32 MB - 0x010000 = 65536 blocks
 		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
 		*(respPacketPtr + 15) = 0xF0;				// device status: 1110 1000, read/write
 		checksum ^= 0xF0;
@@ -882,69 +853,7 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 	}
 	else
 	{
-													// 800kB  - 0x000640
-		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;				// device status: 1111 0000, read/write
-		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0xC0;				// block size low byte: 0x40
-		checksum ^=0x40;
-		*(respPacketPtr + 17) = 0x86;				// block size mid byte: 0x06
-		checksum ^=0x06;
-		*(respPacketPtr + 18) = 0x80;				// block size high byte: 0x00
-
-		*(respPacketPtr + 19) = 0x80;				// GRP1 MSBs
-		*(respPacketPtr + 20) = 0x83;				// ID string length, 3 chars
-		checksum ^= 0x03;
-		*(respPacketPtr + 21) = 'B' | 0x80;			// ID string, 16 chars total
-		checksum ^= 'B';
-		*(respPacketPtr + 22) = 'B' | 0x80;
-		checksum ^= 'B';
-		*(respPacketPtr + 23) = 'B' | 0x80;
-		checksum ^= 'B';
-		*(respPacketPtr + 24) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 25) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 26) = ' ' | 0x80;
-		checksum ^= 0x20;
-
-		*(respPacketPtr + 27) = 0x80;				// GRP2 MSBs
-		*(respPacketPtr + 28) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 29) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 30) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 31) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 32) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 33) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 34) = ' ' | 0x80;
-		checksum ^= 0x20;
-
-		// Pretending to be an 800k RAM disk
-		*(respPacketPtr + 35) = 0x80;				// GRP3 MSBs: 000 0000
-		*(respPacketPtr + 36) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 37) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 38) = ' ' | 0x80;
-		checksum ^= 0x20;
-
-		*(respPacketPtr + 39) = 0x82;				// device type: 0x02 = Hard disk
-		checksum ^= 0x02;
-		*(respPacketPtr + 40) = 0xA0;				// device subtype: 0x20 = not removable
-		checksum ^= 0x20;
-
-		*(respPacketPtr + 41) = 0x80;				// firmware version, 2 bytes
-		checksum ^= 0x00;
-		*(respPacketPtr + 42) = 0x80;
-	}
-
-/*	{
-													// 32 MB  - 0x010000 (or 0x00FFFF ???)
+													// 32 MB - 0x010000 = 65536 blocks
 		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
 		*(respPacketPtr + 15) = 0xF0;				// device status: 1110 1000, read/write
 		checksum ^= 0xF0;
@@ -954,8 +863,8 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		checksum ^= 0x01;
 
 		*(respPacketPtr + 19) = 0x80;				// GRP1 MSBs
-		*(respPacketPtr + 20) = 0x8A;				// ID string length, 10 chars
-		checksum ^= 0x0A;
+		*(respPacketPtr + 20) = 0x8B;				// ID string length, 11 chars
+		checksum ^= 0x0B;
 		*(respPacketPtr + 21) = 'B' | 0x80;			// ID string, 16 chars total
 		checksum ^= 'B';
 		*(respPacketPtr + 22) = 'e' | 0x80;
@@ -1003,7 +912,6 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		checksum ^= 0x02;
 		*(respPacketPtr + 42) = 0x80;
 	}
-*/
 
 	*(respPacketPtr + 43) =  checksum       | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 44) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1

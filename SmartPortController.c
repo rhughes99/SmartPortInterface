@@ -1,6 +1,7 @@
-/*	SmartPort Controller
-	Emulates two devuces
-	Shared memory example
+/*	SmartPort Controller TEST
+	Emulates two devices
+	Modern OS, shared memory
+	03/07/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,39 +19,63 @@ void saveDiskImage(unsigned char image, const char *fileName);
 void encodeInitReplyPackets(void);
 void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat);
 void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat);
-void encodeHandshakeReplyPacket(void);
 void encodeDataPacket(unsigned char srcID, unsigned char dataStat, unsigned char device, unsigned int block);
 
 char decodeDataPacket(void);
 char checkCmdChecksum(void);
-void printPacket(unsigned char id);
+void printRcvdPacket(void);
 void debugDataPacket(void);
 
-
 // PRU Memory Locations
-#define PRU_ADDR		0x4A300000		// Start of PRU memory Page 163 am335x TRM
-#define PRU_LEN			0x80000			// Length of PRU memory
-//#define PRU0_DRAM		0x00000			// Offset to DRAM
-#define PRU1_DRAM		0x02000
-//#define PRU_SHAREDMEM	0x10000			// Offset to shared memory
+#define PRU_ADDR			0x4A300000		// Start of PRU memory Page 163 am335x TRM
+#define PRU_LEN				0x80000			// Length of PRU memory
+#define PRU1_DRAM			0x02000
 
-//unsigned int *pru0DRAM_32int_ptr;		// Points to the start of PRU 0 usable RAM
-unsigned int *pru1DRAM_32int_ptr;		// Points to the start of PRU 1 usable RAM
-unsigned char *pru1DRAM_char_ptr;
-//unsigned int *prusharedMem_32int_ptr;	// Points to the start of shared memory
+// First 0x200 bytes of PRU RAM are STACK & HEAP
+#define STATUS_ADR			0x0300			// address of eBusState
+#define BUS_ID_1_ADR		0x0301			// address of ID1
+#define BUS_ID_2_ADR		0x0302			// address of ID2
+#define WAIT_ADR			0x0303			// address of WAIT, restart PRU after creating response
+#define WAIT_SET			0x00			// PRU -> Controller: waiting
+#define WAIT_GO				0x01			// Controller -> PRU: send response
+#define WAIT_SKIP			0x02			// Controller -> PRU: continue without sending response
+#define ERROR_ADR			0x0304			// address of PRU error code
 
+#define RCVD_PACKET_ADR		0x0400			// 1048, command or data from A2
+#define RCVD_PBEGIN_ADR		0x0406			// Packet Begin
+#define RCVD_DEST_ADR		0x0407			// Destination ID
+#define RCVD_TYPE_ADR		0x0409			// Packet Type
+#define RCVD_CMD_ADR		0x040F			// CMD Number
 
-static unsigned char *pruStatusPtr;						// PRU -> Controller
-static unsigned char *rcvdPacketPtr;					// start of what A2 sent us
-static unsigned char *respPacketPtr;					// start of what we send to A2
-static unsigned char *initResp1Ptr;						// start of Init response 1
-static unsigned char *initResp2Ptr;						// start of Init response 2
+#define RESP_PACKET_ADR		0x0800			// 2024, all responses except Inits
+#define INIT_RESP_1_ADR		0x0C00			// 3072
+#define INIT_RESP_2_ADR		0x0E00			// 3584
 
+// Someday might move everything to shared memory
+//#define PRU_SHAREDMEM	0x10000				// Offset to shared memory
+//unsigned int *prusharedMem_32int_ptr;		// Points to the start of shared memory
+
+static unsigned char *pru1RAMptr;			// start of PRU1 memory
+static unsigned char *pruStatusPtr;			// PRU -> Controller
+static unsigned char *busID1ptr;			// spID1 in PRU memory
+static unsigned char *busID2ptr;			// spID2 in PRU memory
+static unsigned char *pruWaitPtr;			// flag to pause PRU in PRU memory
+static unsigned char *pruErrorPtr;			// error code in PRU memory
+
+static unsigned char *rcvdPacketPtr;		// start packet A2 sent us
+static unsigned char *rcvdPacketBeginPtr;
+static unsigned char *rcvdPacketDestPtr;
+static unsigned char *rcvdPacketTypePtr;
+static unsigned char *rcvdPacketCmdPtr;
+
+static unsigned char *respPacketPtr;		// start of what we send to A2
+static unsigned char *initResp1Ptr;			// start of Init response 1
+static unsigned char *initResp2Ptr;			// start of Init response 2
 
 unsigned char running;
 #define NUM_BLOCKS	65536
-unsigned char theImages[2][NUM_BLOCKS][512];				// [device][block][byte]
-unsigned char tempBuffer[512];								// holds data from A2 till verified
+unsigned char theImages[2][NUM_BLOCKS][512];	// [device][block][byte]
+unsigned char tempBuffer[512];					// holds data from A2 till verified
 
 // First image is boot device
 //const char *diskImages[] = {"IIGSSystem604/LiveInstall.po", "Large/BigBlank.po"};
@@ -61,16 +86,15 @@ unsigned char tempBuffer[512];								// holds data from A2 till verified
 //const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GOProDOS.2mg"};
 //const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
 //const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BigBlank.po"};
-
-const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/ZipChipUtil.po"};
+const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
 
 // IDs provided by A2
-unsigned char spID1, spID2, imageToggle;	// we seem to assume spID2 > spID1
+unsigned char spID1, spID2;
 
 //____________________
 int main(int argc, char *argv[])
 {
-	unsigned char destID, destDevice, type, cmdNum, statCode;
+	unsigned char destID, destDevice, type, cmdNum, statCode, id;
 	unsigned char msbs, blkNumLow, blkNumMid, blkNumHi;
 	unsigned char diskImage1Changed, diskImage2Changed;		// 1 = image changed since loading
 	unsigned int i, resetCnt, loopCnt, blkNum, readCnt1, writeCnt1, readCnt2, writeCnt2;
@@ -80,140 +104,190 @@ int main(int argc, char *argv[])
 	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
 	enum pruStatuses pruStatus, lastPruStatus;
 
+	enum pruErrors {eNOERROR, eERROR1, eERROR2, eERROR3};
+
 	enum cmdNums {eSTATUS=0x80, eREADBLK, eWRITEBLK, eFORMAT, eCONTROL, eINIT, eOPEN, eCLOSE, eREAD, eWRITE};
 	enum extCmdNums {eEXTSTATUS=0xC0, eEXTREADBLK, eEXTWRITEBLK, eEXTFORMAT, eEXTCONTROL, eEXTINIT, eEXTOPEN, eEXTCLOSE, eEXTREAD, eEXTWRITE};
 
-	unsigned int *pru;		// Points to start of PRU memory
-//	unsigned int *pruDRAM_32int_ptr;
+	unsigned char *pru;		// start of PRU memory
 	int	fd;
 
-	fd = open ("/dev/mem", O_RDWR | O_SYNC);
+	fd = open("/dev/mem", O_RDWR | O_SYNC);
 	if (fd == -1)
 	{
-		printf ("*** ERROR: could not open /dev/mem.\n");
+		printf("*** ERROR: could not open /dev/mem.\n");
 		return EXIT_FAILURE;
 	}
-	pru = mmap (0, PRU_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, PRU_ADDR);
+	pru = mmap(0, PRU_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, PRU_ADDR);
 	if (pru == MAP_FAILED)
 	{
-		printf ("*** ERROR: could not map memory.\n");
+		printf("*** ERROR: could not map memory.\n");
 		return EXIT_FAILURE;
 	}
 	close(fd);
 
 	// Set memory pointers
-//	pru0DRAM_32int_ptr =     pru + PRU0_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU0 memory
-	pru1DRAM_32int_ptr =     pru + PRU1_DRAM/4 + 0x200/4;	// Points to 0x200 of PRU1 memory
-	pru1DRAM_char_ptr  = pru + PRU1_DRAM + 0x200;
-//	prusharedMem_32int_ptr = pru + PRU_SHAREDMEM/4;			// Points to start of shared memory
+	pru1RAMptr 		= pru + PRU1_DRAM;
 
-	pruStatusPtr	= pru1DRAM_char_ptr + 0x0100;				// 0x200 + 0x100 =  768
-	rcvdPacketPtr	= pru1DRAM_char_ptr + 0x0200;				// 0x200 + 0x200 = 1024
-	respPacketPtr	= pru1DRAM_char_ptr + 0x0600;				// 0x200 + 0x600 = 2048
-	initResp1Ptr	= pru1DRAM_char_ptr + 0x0A00;				// 0x200 + 0xA00 = 3072
-	initResp2Ptr	= pru1DRAM_char_ptr + 0x0C00;				// 0x200 + 0xC00 = 3584
+	pruStatusPtr	= pru1RAMptr + STATUS_ADR;
+	busID1ptr		= pru1RAMptr + BUS_ID_1_ADR;
+	busID2ptr		= pru1RAMptr + BUS_ID_2_ADR;
+	pruWaitPtr		= pru1RAMptr + WAIT_ADR;
+	pruErrorPtr		= pru1RAMptr + ERROR_ADR;
 
+	rcvdPacketPtr		= pru1RAMptr + RCVD_PACKET_ADR;
+	rcvdPacketBeginPtr	= pru1RAMptr + RCVD_PBEGIN_ADR;
+	rcvdPacketDestPtr	= pru1RAMptr + RCVD_DEST_ADR;
+	rcvdPacketTypePtr	= pru1RAMptr + RCVD_TYPE_ADR;
+	rcvdPacketCmdPtr	= pru1RAMptr + RCVD_CMD_ADR;
 
-	loadDiskImages(diskImages[0], diskImages[1]);			// load both images
+	respPacketPtr	= pru1RAMptr + RESP_PACKET_ADR;
+	initResp1Ptr	= pru1RAMptr + INIT_RESP_1_ADR;
+	initResp2Ptr	= pru1RAMptr + INIT_RESP_2_ADR;
+
+	loadDiskImages(diskImages[0], diskImages[1]);		// load both images
 	diskImage1Changed = 0;
 	diskImage2Changed = 0;
-	
-	(void) signal(SIGINT,  myShutdown);						// ^c = graceful shutdown
-	(void) signal(SIGTSTP, myDebug);						// ^z
 
+	(void) signal(SIGINT,  myShutdown);					// ^c = graceful shutdown
+	(void) signal(SIGTSTP, myDebug);					// ^z
 
 	lastPruStatus = eUNKNOWN;
-	spID1 = 0xFF;											// we are not inited yet
+	spID1 = 0xFF;										// we are not inited yet
 	spID2 = 0xFF;
 	resetCnt = 0;
 	readCnt1 = 0;
 	readCnt2 = 0;
 	writeCnt1 = 0;
 	writeCnt2 = 0;
-	loopCnt = 0;											// do something every n times around the loop
+	loopCnt = 0;										// do something every n times around the loop
 	running = 1;
-	imageToggle = 0;
 
-	encodeInitReplyPackets();								// put two Init reply packets in PRU ram
+	encodeInitReplyPackets();							// put two Init reply packets in PRU ram
 
-
-	printf("\n--- SmartPortIF running: ");
+	printf("\n--- SmartPortIF running\n");
 	do
 	{
-//RMH		usleep(1000);
-		
-		if (spID1 == 0xFF)			// Are we inited yet?
+		usleep(40);		// was 100, then 20
+
+		switch(*pruErrorPtr)
 		{
-			usleep(1);
-			spID1 = *(pruStatusPtr + 2);
-			spID2 = *(pruStatusPtr + 3);
-			if (spID1 != 0xFF)
-				printf("IDs 0x%X and 0x%X\n", spID1, spID2);
+			case eNOERROR:
+				break;
+
+			case eERROR1:
+				printf("*** ERROR1 detected:\n");
+				printRcvdPacket();
+				*pruErrorPtr = eNOERROR;
+				break;
+
+			case eERROR2:
+				printf("*** ERROR2 detcted:\n");
+				printf("\tMy IDs: 0x%X\t0x%X\n", *busID1ptr, *busID2ptr);
+				printf("\tDEST = 0x%X\n", *rcvdPacketDestPtr);
+				printf("\tCMD  = 0x%X\n", *rcvdPacketCmdPtr);
+				*pruErrorPtr = eNOERROR;
+				break;
+
+			case eERROR3:
+				printf("*** ERROR3 detected\n");
+				printf("\tMy IDs: 0x%X\t0x%X\n", *busID1ptr, *busID2ptr);
+				printf("\tDEST = 0x%X\n", *rcvdPacketDestPtr);
+				printf("\tCMD  = 0x%X\n", *rcvdPacketCmdPtr);
+				*pruErrorPtr = eNOERROR;
+				break;
+
+			default:
+				printf("*** Unknown ERROR\n");
 		}
-		else
+
+		pruStatus = *pruStatusPtr;
+		switch (pruStatus)
 		{
-			usleep(100);
-			pruStatus = *pruStatusPtr;		
-			switch (pruStatus)
+			case eIDLE:
 			{
-				case eIDLE:
+				if (pruStatus != lastPruStatus)
 				{
-					if (pruStatus != lastPruStatus)
+//					printf("Idle\n");
+					id = *busID1ptr;
+					if (id != spID1)
 					{
-//						printf("Idle\n");
-						lastPruStatus = pruStatus;
+						spID1 = id;
+						printf("\tspID1 changed to 0x%X\n", spID1);
 					}
-					break;
+					id = *busID2ptr;
+					if (id != spID2)
+					{
+						spID2 = id;
+						printf("\tspID2 changed to 0x%X\n", spID2);
+					}
+					lastPruStatus = pruStatus;
 				}
-				case eRESET:
+				break;
+			}
+			case eRESET:
+			{
+				if (pruStatus != lastPruStatus)
 				{
-					if (pruStatus != lastPruStatus)
-					{
-						printf("\n--- Reset %d: ", resetCnt);
-						spID1 = 0xFF;
-						spID2 = 0xFF;
-						readCnt1 = 0;
-						writeCnt1 = 0;
-						readCnt2 = 0;
-						writeCnt2 = 0;
-						resetCnt++;
-						lastPruStatus = pruStatus;
-					}
-					break;
+					printf("--- Reset %d \n", resetCnt);
+					spID1 = *busID1ptr;
+					spID2 = *busID2ptr;
+					printf("\tspID1=0x%X spID2=0x%X\n", spID1, spID2);
+
+					readCnt1 = 0;
+					writeCnt1 = 0;
+					readCnt2 = 0;
+					writeCnt2 = 0;
+					resetCnt++;
+					lastPruStatus = pruStatus;
 				}
-				case eENABLED:
+				break;
+			}
+			case eENABLED:
+			{
+				if (pruStatus != lastPruStatus)
 				{
-					if (pruStatus != lastPruStatus)
+//					printf("Enabled\n");
+					id = *busID1ptr;
+					if (id != spID1)
 					{
-//						printf("Enabled\n");
-						lastPruStatus = pruStatus;
+						spID1 = id;
+						printf("\tspID1 changed to 0x%X\n", spID1);
 					}
-					break;
+					id = *busID2ptr;
+					if (id != spID2)
+					{
+						spID2 = id;
+						printf("\tspID2 changed to 0x%X\n", spID2);
+					}
+					lastPruStatus = pruStatus;
 				}
-				case eRCVDPACK:
-				{	// PRU has a packet, command or data
+				break;
+			}
+			case eRCVDPACK:
+			{	// PRU has a packet, command or data
+				if (pruStatus != lastPruStatus)
+				{
 //					printf("Received packet\n");
 
-					destID = *(rcvdPacketPtr + 7);							// with msb = 1
-					type   = *(rcvdPacketPtr + 9);							// 0x80=Cmd, 0x81=Status, 0x82=Data
-					cmdNum = *(rcvdPacketPtr + 15);
+					destID = *rcvdPacketDestPtr;			// with msb = 1
+					type   = *rcvdPacketTypePtr;			// 0x80=Cmd, 0x81=Status, 0x82=Data
+					cmdNum = *rcvdPacketCmdPtr;
+//					printf("\tdestID = 0x%X\n", destID);
+//					printf("\ttype   = 0x%X\n", type);
+//					printf("\tcmdNm  = 0x%X\n", cmdNum);
 
-					destDevice = destID - spID1;							// theImages[0] or [1]
-					if (imageToggle)
-					{
-						// DEBUG - toggle devices
-						if (destDevice == 0)
-							destDevice = 1;
-						else
-							destDevice = 0;
-					}
-
-//					printPacket(destID);
 					if ((destID == spID1) || (destID == spID2))
 					{
-						if (type == 0x82)										// data packet
+						// Rcvd packet is for us so determine which device/image
+						if (destID == spID1)
+							destDevice = 0;
+						else
+							destDevice = 1;
+
+						if (type == 0x82)				// data packet
 						{
-							// blkNum was set previously by WriteBlock command so 
+							// blkNum was set previously by WriteBlock command so
 							//  decode to tempBuffer[] and check status
 							if (decodeDataPacket() == 0)						// checksum ok
 							{
@@ -230,17 +304,14 @@ int main(int argc, char *argv[])
 							}
 							else
 							{
-								printf("*** [0x%X] Bad Write datablock status\n", destID);
+								printf("*** [0x%X] Bad checksum in received datablock %d\n", destID, blkNum);
 								encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
-								
+
 								debugDataPacket();
 							}
-
-							// DEBUG
-							if (blkNum > 100)
-								printf("\tDP %d\n", blkNum);
+							*pruWaitPtr = WAIT_GO;
 						}
-						else														// command packet
+						else							// command packet
 						{
 							checkCmdChecksum();
 							switch (cmdNum)
@@ -262,6 +333,7 @@ int main(int argc, char *argv[])
 										printf("*** [0x%X] Unsupported statCode: 0x%X\n", destID, statCode);
 										encodeStdStatusReplyPacket(destID, 0x21);	// 0x21 = not supported
 									}
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -296,9 +368,10 @@ int main(int argc, char *argv[])
 									else
 									{
 										printf("*** [0x%X] Bad Read BlkNum: %d\n", destID, blkNum);
-										printPacket(destID);
+//										printRcvdPacket();
 										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
 									}
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -327,21 +400,10 @@ int main(int argc, char *argv[])
 										blkNum = blkNumLow + 256*blkNumMid + 65536*blkNumHi;
 										printf("[0x%X] ExtWB: %d\n", destID, blkNum);
 									}
-
-									// Check blkNum here and send handshake or error status
-									if (blkNum < NUM_BLOCKS)				// a gross check
-									{
-										encodeHandshakeReplyPacket();
-									}
-									else
-									{
+									if (blkNum > NUM_BLOCKS)
 										printf("*** [0x%X] Bad Write BlkNum: %d\n", destID, blkNum);
-										encodeStdStatusReplyPacket(destID, 0x06);		// 0x06 = bus error
-									}
 
-									// DEBUG
-									if (blkNum > 100)
-										printf("WB %d\n ", blkNum);
+									*pruWaitPtr = WAIT_SKIP;
 									break;
 								}
 
@@ -349,7 +411,8 @@ int main(int argc, char *argv[])
 								{
 									statCode = *(rcvdPacketPtr + 11);
 									printf("[0x%X] Control: 0x%X\n", destID, statCode);
-									encodeStdStatusReplyPacket(destID, 0x21);
+									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
+									*pruWaitPtr = WAIT_GO;
 									break;
 								}
 
@@ -357,57 +420,57 @@ int main(int argc, char *argv[])
 								{
 									printf("*** [0x%X] Unexpected cmdNum= 0x%X\n", destID, cmdNum);
 									encodeStdStatusReplyPacket(destID, 0x21);		// 0x21 = not supported
-//									printPacket(destID);
+									printRcvdPacket();
+									*pruWaitPtr = WAIT_GO;
 								}
 							}
 						}
 					}
 					else
 					{
-						// This should never happen
-						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, SPID2);
+						// A bus ID that is not ours - this should never happen
+						printf("*** destID [0x%X] != spID1 [0x%X] or spID2 [0x%X]\n", destID, spID1, spID2);
+//						printRcvdPacket();
+						*pruWaitPtr = WAIT_SKIP;
 					}
-
-					prussdrv_pru_send_event(ARM_PRU0_INTERRUPT);				// allow PRU to continue
-					usleep(1);
-					prussdrv_pru_clear_event(PRU_EVTOUT0, ARM_PRU0_INTERRUPT);	// PRU halts after next received packet
-					break;
+					lastPruStatus = eRCVDPACK;
 				}
-				case eSENDING:
-				{
-					if (pruStatus != lastPruStatus)
-					{
-//						printf("Sending...\n");
-						lastPruStatus = eSENDING;
-					}
-					break;
-				}
-				case eWRITING:
-				{
-					if (pruStatus != lastPruStatus)
-					{
-//						printf("Writing...\n");
-						lastPruStatus = eWRITING;
-					}
-					break;
-				}
-				default:
-					printf("*** Unexpected pruStatus: %d\n", pruStatus);
+				break;
 			}
+			case eSENDING:
+			{
+				if (pruStatus != lastPruStatus)
+				{
+//					printf("Sending...\n");
+					lastPruStatus = eSENDING;
+				}
+				break;
+			}
+			case eWRITING:
+			{
+				if (pruStatus != lastPruStatus)
+				{
+//					printf("Writing...\n");
+					lastPruStatus = eWRITING;
+				}
+				break;
+			}
+			default:
+				printf("*** Unexpected pruStatus: %d\n", pruStatus);
 		}
 
-//RMH		loopCnt++;
-		if (loopCnt == 100000)
+		loopCnt++;
+		if (loopCnt == 200000)
 		{
 			loopCnt = 0;
 			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
 		}
 	} while (running);
 
-	// Ask about saving changed image(s)
 	if (diskImage1Changed)
 	{
-		printf("\n - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
+		printf("FYI - disk image 1 was modified\n");
+/*		printf("\n - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
 		fgets(saveName, 64, stdin);
 		length = strlen(saveName);
 		if (length > 5)
@@ -419,9 +482,11 @@ int main(int argc, char *argv[])
 		{
 			printf("NEED TO IMPLEMENT\n");
 		}
+*/
 	}
 	if (diskImage2Changed)
 	{
+		printf("FYI - disk image 2 was modified\n");
 		printf(" - Save %s modifications? Enter name or <CR>: ", diskImages[1]);
 		fgets(saveName, 64, stdin);
 		length = strlen(saveName);
@@ -448,6 +513,7 @@ int main(int argc, char *argv[])
 void myShutdown(int sig)
 {
 	// ctrl-c
+	printf("\n");
 	running = 0;
 	(void) signal(SIGINT, SIG_DFL);		// reset signal handling of SIGINT
 }
@@ -456,17 +522,11 @@ void myShutdown(int sig)
 void myDebug(int sig)
 {
 	// ctrl-z
-	// Toggle image order
-	if (imageToggle)
-	{
-		imageToggle = 0;
-		printf(" --- Resetting images to startup configuration\n");
-	}
-	else
-	{
-		imageToggle = 1;
-		printf(" --- Flipping images\n");
-	}
+	unsigned int i;
+
+	printf("\n");
+	for (i=0; i<32; i++)
+		printf("%d\t0x%X\n", i, *(rcvdPacketPtr + i));
 }
 
 //____________________
@@ -541,7 +601,7 @@ void loadDiskImages(const char *image1, const char *image2)
 		numBlksRead = fread(theImages[1][i], 512, 1, fd);	// block size is 512 bytes
 		if (numBlksRead != 1)
 			break;
-		
+
 		totalBlksLoaded++;
 	}
 	fclose(fd);
@@ -582,7 +642,6 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 {
 	// Reply to init and standard status commands with Statcode = 0x00
 	// Assumes srcID has MSB set
-	// spID1 is big HD, spID2 is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -592,7 +651,7 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 	*(respPacketPtr +  3) = 0xF3;
 	*(respPacketPtr +  4) = 0xFC;
 	*(respPacketPtr +  5) = 0xFF;
-	
+
 	*(respPacketPtr +  6) = 0xC3;				// packet begin
 	*(respPacketPtr +  7) = 0x80;				// destination
 	*(respPacketPtr +  8) = srcID;				// source
@@ -604,28 +663,14 @@ void encodeStdStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 
 	for (i=7; i<14; i++)
 		checksum ^= *(respPacketPtr+i);
-	
-	if (srcID == spID1)
-	{											// 32 MB  - 0x010000 (or 0x00FFFF ???)
-		*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;			// device status: 1111 1000, read/write
-		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0x80;			// block size low byte: 0x00
-		*(respPacketPtr + 17) = 0x80;			// block size mid byte: 0x00
-		*(respPacketPtr + 18) = 0x81;			// block size high byte: 0x01
-		checksum ^= 0x01;
-	}
-	else
-	{											// 800kB  - 0x000640
-		*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;			// device status: 1111 0000, read/write
-		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0xC0;			// block size low byte: 0x40
-		checksum ^= 0x40;
-		*(respPacketPtr + 17) = 0x86;			// block size mid byte: 0x06
-		checksum ^= 0x06;
-		*(respPacketPtr + 18) = 0x80;			// block size high byte: 0x00
-	}
+											// 32 MB - 0x010000 = 65536 blocks
+	*(respPacketPtr + 14) = 0xC0;			// odd MSBs: 100 0000
+	*(respPacketPtr + 15) = 0xF0;			// device status: 1111 1000, read/write
+	checksum ^= 0xF0;
+	*(respPacketPtr + 16) = 0x80;			// block size low byte: 0x00
+	*(respPacketPtr + 17) = 0x80;			// block size mid byte: 0x00
+	*(respPacketPtr + 18) = 0x81;			// block size high byte: 0x01
+	checksum ^= 0x01;
 
 	*(respPacketPtr + 19) =  checksum	    | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 20) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
@@ -641,7 +686,6 @@ void encodeInitReplyPackets(void)
 	// This routine computes checksum for all elements except source ID
 	//  and puts it in Ptr+19. PRU completes calculation and puts
 	//  result in Ptr+19 & Ptr+20
-	// First device is big HD, second is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -664,8 +708,7 @@ void encodeInitReplyPackets(void)
 
 	for (i=7; i<14; i++)
 		checksum ^= *(initResp1Ptr+i);
-
-												// 32 MB  - 0x010000 (or 0x00FFFF ???)
+												// 32 MB - 0x010000 = 65536 blocks
 	*(initResp1Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
 	*(initResp1Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
 	checksum ^= 0xF0;
@@ -679,8 +722,8 @@ void encodeInitReplyPackets(void)
 	*(initResp1Ptr + 19) = checksum;
 	*(initResp1Ptr + 20) = 0x00;
 
-	*(initResp1Ptr + 21) = 0xC8;					// PEND
-	*(initResp1Ptr + 22) = 0x00;					// end of packet marker in memory
+	*(initResp1Ptr + 21) = 0xC8;				// PEND
+	*(initResp1Ptr + 22) = 0x00;				// end of packet marker in memory
 
 	// Device 2
 	*(initResp2Ptr     ) = 0xFF;				// sync bytes
@@ -702,24 +745,22 @@ void encodeInitReplyPackets(void)
 	checksum = 0;
 	for (i=7; i<14; i++)
 		checksum ^= *(initResp2Ptr+i);
-
-												// 800kB  - 0x000640
+												// 32 MB - 0x010000 = 65536 blocks
 	*(initResp2Ptr + 14) = 0xC0;				// odd MSBs: 100 0000
 	*(initResp2Ptr + 15) = 0xF0;				// device status: 1111 0000, read/write
 	checksum ^= 0xF0;
-	*(respPacketPtr + 16) = 0xC0;				// block size low byte: 0x40
-	checksum ^= 0x40;
-	*(respPacketPtr + 17) = 0x86;				// block size mid byte: 0x06
-	checksum ^= 0x06;
-	*(respPacketPtr + 18) = 0x80;				// block size high byte: 0x00
+	*(initResp2Ptr + 16) = 0x80;				// block size low byte: 0x00
+	*(initResp2Ptr + 17) = 0x80;				// block size mid byte: 0x00
+	*(initResp2Ptr + 18) = 0x81;				// block size high byte: 0x01
+	checksum ^= 0x01;
 
 //	*(initResp2Ptr + 19) =  checksum	   | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 //	*(initResp2Ptr + 20) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
 	*(initResp2Ptr + 19) = checksum;
 	*(initResp2Ptr + 20) = 0x00;
 
-	*(initResp2Ptr + 21) = 0xC8;					// PEND
-	*(initResp2Ptr + 22) = 0x00;					// end of packet marker in memory
+	*(initResp2Ptr + 21) = 0xC8;				// PEND
+	*(initResp2Ptr + 22) = 0x00;				// end of packet marker in memory
 }
 
 //____________________
@@ -727,7 +768,6 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 {
 	// Reply to standard status commands with Statcode = 0x03
 	// Assumes srcID has MSB set
-	// spID1 is big HD, spID2 is 800k HD
 	unsigned char checksum = 0;
 	unsigned int i;
 
@@ -752,7 +792,7 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 
 	if (srcID == spID1)
 	{
-													// 32 MB  - 0x010000 (or 0x00FFFF ???)
+													// 32 MB - 0x010000 = 65536 blocks
 		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
 		*(respPacketPtr + 15) = 0xF0;				// device status: 1110 1000, read/write
 		checksum ^= 0xF0;
@@ -762,8 +802,8 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		checksum ^= 0x01;
 
 		*(respPacketPtr + 19) = 0x80;				// GRP1 MSBs
-		*(respPacketPtr + 20) = 0x8A;				// ID string length, 10 chars
-		checksum ^= 0x0A;
+		*(respPacketPtr + 20) = 0x8B;				// ID string length, 11 chars
+		checksum ^= 0x0B;
 		*(respPacketPtr + 21) = 'B' | 0x80;			// ID string, 16 chars total
 		checksum ^= 'B';
 		*(respPacketPtr + 22) = 'e' | 0x80;
@@ -786,8 +826,8 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		checksum ^= 'n';
 		*(respPacketPtr + 31) = 'e' | 0x80;
 		checksum ^= 'e';
-		*(respPacketPtr + 32) = ' ' | 0x80;
-		checksum ^= 0x20;
+		*(respPacketPtr + 32) = '1' | 0x80;
+		checksum ^= '1';
 		*(respPacketPtr + 33) = ' ' | 0x80;
 		checksum ^= 0x20;
 		*(respPacketPtr + 34) = ' ' | 0x80;
@@ -813,49 +853,48 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 	}
 	else
 	{
-													// 800kB  - 0x000640
+													// 32 MB - 0x010000 = 65536 blocks
 		*(respPacketPtr + 14) = 0xC0;				// odd MSBs: 100 0000
-		*(respPacketPtr + 15) = 0xF0;				// device status: 1111 0000, read/write
+		*(respPacketPtr + 15) = 0xF0;				// device status: 1110 1000, read/write
 		checksum ^= 0xF0;
-		*(respPacketPtr + 16) = 0xC0;				// block size low byte: 0x40
-		checksum ^=0x40;
-		*(respPacketPtr + 17) = 0x86;				// block size mid byte: 0x06
-		checksum ^=0x06;
-		*(respPacketPtr + 18) = 0x80;				// block size high byte: 0x00
+		*(respPacketPtr + 16) = 0x80;				// block size low byte: 0x00
+		*(respPacketPtr + 17) = 0x80;				// block size mid byte: 0x00
+		*(respPacketPtr + 18) = 0x81;				// block size high byte: 0x01
+		checksum ^= 0x01;
 
 		*(respPacketPtr + 19) = 0x80;				// GRP1 MSBs
-		*(respPacketPtr + 20) = 0x83;				// ID string length, 3 chars
-		checksum ^= 0x03;
+		*(respPacketPtr + 20) = 0x8B;				// ID string length, 11 chars
+		checksum ^= 0x0B;
 		*(respPacketPtr + 21) = 'B' | 0x80;			// ID string, 16 chars total
 		checksum ^= 'B';
-		*(respPacketPtr + 22) = 'B' | 0x80;
-		checksum ^= 'B';
-		*(respPacketPtr + 23) = 'B' | 0x80;
-		checksum ^= 'B';
-		*(respPacketPtr + 24) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 25) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 26) = ' ' | 0x80;
-		checksum ^= 0x20;
+		*(respPacketPtr + 22) = 'e' | 0x80;
+		checksum ^= 'e';
+		*(respPacketPtr + 23) = 'a' | 0x80;
+		checksum ^= 'a';
+		*(respPacketPtr + 24) = 'g' | 0x80;
+		checksum ^= 'g';
+		*(respPacketPtr + 25) = 'l' | 0x80;
+		checksum ^= 'l';
+		*(respPacketPtr + 26) = 'e' | 0x80;
+		checksum ^= 'e';
 
 		*(respPacketPtr + 27) = 0x80;				// GRP2 MSBs
-		*(respPacketPtr + 28) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 29) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 30) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 31) = ' ' | 0x80;
-		checksum ^= 0x20;
-		*(respPacketPtr + 32) = ' ' | 0x80;
-		checksum ^= 0x20;
+		*(respPacketPtr + 28) = 'B' | 0x80;
+		checksum ^= 'B';
+		*(respPacketPtr + 29) = 'o' | 0x80;
+		checksum ^= 'o';
+		*(respPacketPtr + 30) = 'n' | 0x80;
+		checksum ^= 'n';
+		*(respPacketPtr + 31) = 'e' | 0x80;
+		checksum ^= 'e';
+		*(respPacketPtr + 32) = '2' | 0x80;
+		checksum ^= '2';
 		*(respPacketPtr + 33) = ' ' | 0x80;
 		checksum ^= 0x20;
 		*(respPacketPtr + 34) = ' ' | 0x80;
 		checksum ^= 0x20;
 
-		// Pretending to be an 800k RAM disk
+		// Pretending to be a non-removable hard disk
 		*(respPacketPtr + 35) = 0x80;				// GRP3 MSBs: 000 0000
 		*(respPacketPtr + 36) = ' ' | 0x80;
 		checksum ^= 0x20;
@@ -869,22 +908,15 @@ void encodeStdDibStatusReplyPacket(unsigned char srcID, unsigned char dataStat)
 		*(respPacketPtr + 40) = 0xA0;				// device subtype: 0x20 = not removable
 		checksum ^= 0x20;
 
-		*(respPacketPtr + 41) = 0x80;				// firmware version, 2 bytes
-		checksum ^= 0x00;
+		*(respPacketPtr + 41) = 0x82;				// firmware version, 2 bytes
+		checksum ^= 0x02;
 		*(respPacketPtr + 42) = 0x80;
-	}	
-	
+	}
+
 	*(respPacketPtr + 43) =  checksum       | 0xAA;	// 1 C6 1 C4 1 C2 1 C0
 	*(respPacketPtr + 44) = (checksum >> 1) | 0xAA;	// 1 C7 1 C5 1 C3 1 C1
 	*(respPacketPtr + 45) = 0xC8;					// PEND
 	*(respPacketPtr + 46) = 0x00;					// End of packet marker in memory
-}
-
-//____________________
-void encodeHandshakeReplyPacket(void)
-{
-	// Creates zero-length message; used when all we want to do is handshake with A2
-	*(respPacketPtr+6) = 0x00;	
 }
 
 //____________________
@@ -1009,7 +1041,6 @@ char checkCmdChecksum(void)
 
 	packetCS = *(rcvdPacketPtr+25) & ((*(rcvdPacketPtr+26) << 1) | 0x01);
 
-//	printf("checksum: computed= 0x%X\tpacket= 0x%X\n\n", checksum, packetCS);
 	if (checksum == packetCS)
 	{
 //		printf("GOOD checksum\n");
@@ -1017,83 +1048,32 @@ char checkCmdChecksum(void)
 	}
 	else
 	{
-		printf("*** BAD checksum\n");
+		printf("*** checkCmdChecksum() reports BAD checksum\n");
 		return 1;
 	}
 }
 
 //____________________
-void printPacket(unsigned char id)
+void printRcvdPacket(void)
 {
-	printf("================\n");
-	printf("0x%X [0xFF]\n",   *rcvdPacketPtr);
-	printf("0x%X [0x3F]\n",   *(rcvdPacketPtr+1));
-	printf("0x%X [0xCF]\n",   *(rcvdPacketPtr+2));
-	printf("0x%X [0xF3]\n",   *(rcvdPacketPtr+3));
-	printf("0x%X [0xFC]\n",   *(rcvdPacketPtr+4));
-	printf("0x%X [0xFF]\n\n", *(rcvdPacketPtr+5));
-
-	// PBEGIN
-	printf("0x%X [0xC3]\n\n", *(rcvdPacketPtr+6));
-
-	// Dest - Counts
-	printf("0x%X [0x%X]\n",   *(rcvdPacketPtr+ 7), id);
-	printf("0x%X [0x80]\n",   *(rcvdPacketPtr+ 8));
-	printf("0x%X [0x80]\n",   *(rcvdPacketPtr+ 9));
-	printf("0x%X [0x80]\n",   *(rcvdPacketPtr+10));
-	printf("0x%X [0x80]\n",   *(rcvdPacketPtr+11));
-	printf("0x%X [0x82]\n",   *(rcvdPacketPtr+12));
-	printf("0x%X [0x81]\n\n", *(rcvdPacketPtr+13));
-
-	// Odd bytes
-	printf("0x%X\n",   *(rcvdPacketPtr+14));
-	printf("0x%X\n",   *(rcvdPacketPtr+15));
-	printf("0x%X\n\n", *(rcvdPacketPtr+16));
-
-	// Group-of-7
-	printf("0x%X\n",   *(rcvdPacketPtr+17));
-	printf("0x%X\n",   *(rcvdPacketPtr+18));
-	printf("0x%X\n",   *(rcvdPacketPtr+19));
-	printf("0x%X\n",   *(rcvdPacketPtr+20));
-	printf("0x%X\n",   *(rcvdPacketPtr+21));
-	printf("0x%X\n",   *(rcvdPacketPtr+22));
-	printf("0x%X\n",   *(rcvdPacketPtr+23));
-	printf("0x%X\n\n", *(rcvdPacketPtr+24));
-
-	// checksums
-	printf("0x%X\n",   *(rcvdPacketPtr+25));
-	printf("0x%X\n\n", *(rcvdPacketPtr+26));
-
-	// PEND
-	printf("0x%X [0xC8]\n", *(rcvdPacketPtr+27));
-
-	printf("================\n");
-
-	// Checksum check
-	checkCmdChecksum();
+	int i;
+	for (i=6; i<28; i++)
+		printf("\t%d 0x%X\n", i, *(rcvdPacketPtr+i));
+	printf("\n");
 }
 
 //____________________
 void debugDataPacket(void)
 {
-	// Search for first (known) bad data value
-
-	unsigned int i;
-	unsigned char data;
-
-	printf("--- debugDataPacket ---\n");
-	for (i=6; i<603; i++)
+	int i;
+	for (i=6; i<605; i++)
 	{
-		data = *(rcvdPacketPtr + i);
-		if (data < 0x80)
+		if (*(rcvdPacketPtr+i) < 0x80)
 		{
-			printf("%d: 0x%X\n", i, data);
+			printf("\t%d 0x%X\n", i-1, *(rcvdPacketPtr+i-1));
+			printf("\t%d 0x%X\n", i  , *(rcvdPacketPtr+i  ));
+			printf("\t%d 0x%X\n", i+1, *(rcvdPacketPtr+i+1));
 			break;
 		}
 	}
-	if (i < 603)
-		printf("0x%X 0x%X [%d]-0x%X 0x%X\n", *(rcvdPacketPtr+i-2), *(rcvdPacketPtr+i-1), i,
-											 *(rcvdPacketPtr+i), *(rcvdPacketPtr+i+1));
-	else
-		printf(" (No bad bytes detected)\n\n");
 }

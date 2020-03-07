@@ -28,7 +28,7 @@
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
 
-	03/06/2020
+	03/07/2020
 */
 #include <stdint.h>
 #include <pru_cfg.h>
@@ -236,7 +236,7 @@ void ReceivePacket(void)
 			__delay_cycles(100);	// 0.5 us
 		}
 
-		// Convert  count into bit(s)
+		// Convert count into bit(s)
 		if (count < 10)			// 1
 		{
 			InsertBit(1);
@@ -305,7 +305,6 @@ void InsertBit(signed char bit)
 {
 	// Insert bit into byteInProcess and put in RAM when byte completed
 	// If bit = -1, reset parameters (start of packet)
-
 	static unsigned char bitCnt, byteInProcess;
 	static unsigned int memoryPtr;
 
@@ -336,118 +335,11 @@ void InsertBit(signed char bit)
 	}
 }
 
-/*
-//____________________
-void ReceivePacket(void)
-{
-	// Receive packet from A2 and put into data memory, starting at RCVD_PACKET_ADR
-
-	unsigned char lastWDAT, byteInProcess, bitCnt, packetNotDone;
-	unsigned char currentWDAT, WDAT_xor, timingToggle;
-	unsigned int memoryPtr;
-
-	lastWDAT = 1;
-	byteInProcess = 0;
-	bitCnt = 0;
-	packetNotDone = 1;
-	timingToggle = 0;
-	memoryPtr = RCVD_PACKET_ADR;
-
-	// Wait for WDATA to go low, our t0
-	while ((__R31 & WDAT) == WDAT);
-
-	__delay_cycles(500);	// ~n us to sample in bit cell center
-
-	while (packetNotDone == 1)
-	{
-		currentWDAT = __R31 & WDAT;
-		WDAT_xor = lastWDAT ^ currentWDAT;
-		lastWDAT = currentWDAT;
-
-		if (WDAT_xor == 0)
-			byteInProcess &= 0xFE;
-		else
-			byteInProcess |= 0x01;
-
-		if (bitCnt == 7)		// done with this byte?
-		{
-			PRU1_RAM[memoryPtr] = byteInProcess;
-			memoryPtr++;
-			if (byteInProcess == 0x00)	// WDAT hasn't changed in 32 us
-				packetNotDone = 0;
-			else
-				bitCnt = 0;
-		}
-		else					// not done with this byte
-		{
-			byteInProcess = byteInProcess<<1;	// shift bits left
-			bitCnt++;
-		}
-
-		// Timing appears to be dependent on number of cases (!?)
-		//  Starting with 6 + default
-		// ~762, on average?
-		switch (timingToggle)
-		{
-			case 0:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			case 1:
-				__delay_cycles(760);
-				timingToggle++;
-				break;
-
-			case 2:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			case 3:
-				__delay_cycles(760);
-				timingToggle++;
-				break;
-
-			case 4:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			case 5:
-				__delay_cycles(760);
-				timingToggle++;
-				break;
-
-			case 6:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			case 7:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			case 8:
-				__delay_cycles(759);
-				timingToggle++;
-				break;
-
-			default:
-				__delay_cycles(759);
-				timingToggle = 0;
-		}
-	}
-	PRU1_RAM[STATUS_ADR] = eRCVDPACK;
-}
-*/
 //____________________
 void ProcessPacket(void)
 {
 	// If packet is Init, immediately send Init response
 	// Otherwise, tell Controller and wait for instructions
-
 	unsigned char dest, cmd;
 
 	if (PRU1_RAM[RCVD_PBEGIN_ADR] == 0xC3)
@@ -455,13 +347,13 @@ void ProcessPacket(void)
 		// It's a legitimate packet (maybe?)
 		dest = PRU1_RAM[RCVD_DEST_ADR];			// our assigned ID in INIT packets
 //		type = PRU1_RAM[RCVD_TYPE_ADR];
-		cmd  = PRU1_RAM[RCVD_CMD_ADR];			// for command packetss only!
+		cmd  = PRU1_RAM[RCVD_CMD_ADR];			// for command packets only!
 
-		// Bus initialization is first priority, assume it's a command
+		// Bus initialization is first priority, assume packet is a command
 		if (initCnt < 2)
 		{
-			if ((cmd == 0x85) || (cmd == 0xF0))	// Init, deal with three cases???
-//			if (cmd == 0x85)
+			// Note that we are ignoring (working around) the 0xF0 issue
+			if ((cmd == 0x85) || (cmd == 0xF0))	// Init, deal with three cases
 			{
 				if (initCnt == 0)
 				{
@@ -474,10 +366,12 @@ void ProcessPacket(void)
 					initCnt = 8;	// not 0 or 1
 				}
 				else
-					PRU1_RAM[ERROR_ADR] = eERROR1;
+					PRU1_RAM[ERROR_ADR] = eERROR2;
 			}
 		}
-		else if ((dest == busID1) || (dest == busID2))	// we are inited
+
+		// We are inited so let Controller make the tough decisions
+		else if ((dest == busID1) || (dest == busID2))
 		{
 			PRU1_RAM[STATUS_ADR] = eRCVDPACK;		// tell Controller packet received
 
@@ -490,11 +384,12 @@ void ProcessPacket(void)
 			if (PRU1_RAM[WAIT_ADR] == WAIT_GO)
 				SendPacket(0, RESP_PACKET_ADR);
 		}
+
 		else
-			PRU1_RAM[ERROR_ADR] = eERROR2;
+			PRU1_RAM[ERROR_ADR] = eERROR3;
 	}
 	else
-		PRU1_RAM[ERROR_ADR] = eERROR3;
+		PRU1_RAM[ERROR_ADR] = eERROR1;
 }
 
 //____________________
@@ -550,7 +445,6 @@ void SendPacket(char initFlag, unsigned int memPtr)
 {
 	// Send packet starting at memPtr, ending with 0x00
 	// initFlag == 1, we are sending init and handle ending differently
-
 	unsigned char byteInProgress, bitMask, sendDone;
 
 	PRU1_RAM[STATUS_ADR] = eSENDING;	// for Controller
