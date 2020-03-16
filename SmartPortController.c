@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	03/07/2020
+	03/16/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +10,9 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/mman.h>
+
+#include <errno.h>
+extern int errno;
 
 void myShutdown(int sig);
 void myDebug(int sig);
@@ -80,13 +83,13 @@ unsigned char tempBuffer[512];					// holds data from A2 till verified
 // First image is boot device
 //const char *diskImages[] = {"IIGSSystem604/LiveInstall.po", "Large/BigBlank.po"};
 
-//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BBBProgram.po"};
-//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/Assembleur.2mg"};
-//const char *diskImages[] = {"Large/BBBProgram.po", "Large/Sys604Copy3.po"};
-//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GOProDOS.2mg"};
-//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
-//const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/BigBlank.po"};
-const char *diskImages[] = {"Large/Sys604Copy3.po", "Large/GSUtilities.2mg"};
+//const char *diskImages[] = {"Large/System604.po", "Large/BBBProgram.po"};
+//const char *diskImages[] = {"Large/System604.po", "Large/Assembleur.2mg"};
+//const char *diskImages[] = {"Large/System604.po", "Large/GOProDOS.2mg"};
+//const char *diskImages[] = {"Large/System604.po", "Large/GSUtilities.2mg"};
+//const char *diskImages[] = {"Large/System604.po", "Large/BigBlank.po"};
+
+const char *diskImages[] = {"Large/MySystem604.po", "Large/DISKS_AA.po"};
 
 // IDs provided by A2
 unsigned char spID1, spID2;
@@ -460,7 +463,7 @@ int main(int argc, char *argv[])
 		}
 
 		loopCnt++;
-		if (loopCnt == 200000)
+		if (loopCnt == 400000)
 		{
 			loopCnt = 0;
 			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
@@ -469,8 +472,12 @@ int main(int argc, char *argv[])
 
 	if (diskImage1Changed)
 	{
-		printf("FYI - disk image 1 was modified\n");
-/*		printf("\n - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
+		printf("FYI - disk image 1 was modified:\n");
+		printf(" - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
+
+		for (i=0; i<64; i++)
+			saveName[i] = 0;
+
 		fgets(saveName, 64, stdin);
 		length = strlen(saveName);
 		if (length > 5)
@@ -482,12 +489,16 @@ int main(int argc, char *argv[])
 		{
 			printf("NEED TO IMPLEMENT\n");
 		}
-*/
+
 	}
 	if (diskImage2Changed)
 	{
-		printf("FYI - disk image 2 was modified\n");
+		printf("FYI - disk image 2 was modified:\n");
 		printf(" - Save %s modifications? Enter name or <CR>: ", diskImages[1]);
+
+		for (i=0; i<64; i++)
+			saveName[i] = 0;
+
 		fgets(saveName, 64, stdin);
 		length = strlen(saveName);
 		if (length > 5)
@@ -619,11 +630,26 @@ void saveDiskImage(unsigned char image, const char *fileName)
 	sprintf(imagePath, "/root/DiskImages/Saved/%s", fileName);	// create image path
 
 	printf(" --- Saving: %s ---\n", fileName);
-	fd = fopen(imagePath, "wb");
-	if (!fd)
+	fd = fopen(imagePath, "wb");;
+	if (fd == NULL)
 	{
 		printf("*** Problem opening file for save\n");
-		return;
+		printf("\t[%s]\n", imagePath);
+
+		int errnum;
+		errnum = errno;
+//		fprintf(stderr, "Value of errno: %d\n", fd);
+//		perror("Error printed by perror");
+		fprintf(stderr, "\tError opening file: %s\n", strerror(errnum));
+
+		printf("\n\tTrying to save as asdfghjkl.po\n");
+		fd = fopen("/root/DiskImages/Saved/asdfghjkl.po", "wb");
+		if (fd == NULL)
+		{
+			printf("*** Problem opening. Giving up.\n");
+			return;
+		}
+//		return;
 	}
 
 	totalBlksSaved = 0;

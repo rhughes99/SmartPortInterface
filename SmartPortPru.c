@@ -28,7 +28,7 @@
 		Init response #1 start	0xC00	3072
 		Init response #2 start	0xE00	3584
 
-	03/07/2020
+	03/14/2020
 */
 #include <stdint.h>
 #include <pru_cfg.h>
@@ -118,6 +118,7 @@ int main(int argc, char *argv[])
 				PRU1_RAM[STATUS_ADR] = eIDLE;
 				__R30 &= ~LED;			// LED off
 				__R30 |=  ACK;			// ACK = 1, ready to receive
+				__R30 &= ~TEST;			// TEST = 0
 				break;
 			}
 			case eRESET:
@@ -131,6 +132,7 @@ int main(int argc, char *argv[])
 				PRU1_RAM[STATUS_ADR] = eENABLED;
 				__R30 |= LED;			// LED on
 				__R30 |= ACK;			// ACK = 1, ready to receive
+				__R30 |= TEST;			// TEST = 1
 
 				if (WaitForReq())		// 1 = REQ set, 0 = bus disabled
 				{
