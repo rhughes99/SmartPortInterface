@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	03/16/2020
+	03/18/2020
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,7 +101,7 @@ int main(int argc, char *argv[])
 	unsigned char msbs, blkNumLow, blkNumMid, blkNumHi;
 	unsigned char diskImage1Changed, diskImage2Changed;		// 1 = image changed since loading
 	unsigned int i, resetCnt, loopCnt, blkNum, readCnt1, writeCnt1, readCnt2, writeCnt2;
-	char saveName[64], imageName[64];
+	char saveName[64];
 	size_t length;
 
 	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
@@ -463,7 +463,7 @@ int main(int argc, char *argv[])
 		}
 
 		loopCnt++;
-		if (loopCnt == 400000)
+		if (loopCnt == 600000)
 		{
 			loopCnt = 0;
 			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
@@ -473,43 +473,29 @@ int main(int argc, char *argv[])
 	if (diskImage1Changed)
 	{
 		printf("FYI - disk image 1 was modified:\n");
-		printf(" - Save %s modifications? Enter name or <CR>:  ", diskImages[0]);
-
-		for (i=0; i<64; i++)
-			saveName[i] = 0;
+		printf(" - Save %s modifications? Enter name (???.po) or <CR>:  ", diskImages[0]);
 
 		fgets(saveName, 64, stdin);
-		length = strlen(saveName);
-		if (length > 5)
-		{
-			strncpy(imageName, saveName, length-1);
-			saveDiskImage(0, imageName);
-		}
-		else if (length == 2)
-		{
-			printf("NEED TO IMPLEMENT\n");
-		}
+		length = strlen(saveName) - 1;	// points to last char in saveName
+		if (saveName[length] == '\n')
+			saveName[length] = '\0';
 
+		if (length > 5)
+			saveDiskImage(0, saveName);
 	}
+
 	if (diskImage2Changed)
 	{
 		printf("FYI - disk image 2 was modified:\n");
-		printf(" - Save %s modifications? Enter name or <CR>: ", diskImages[1]);
-
-		for (i=0; i<64; i++)
-			saveName[i] = 0;
+		printf(" - Save %s modifications? Enter name (???.po) or <CR>: ", diskImages[1]);
 
 		fgets(saveName, 64, stdin);
-		length = strlen(saveName);
+		length = strlen(saveName) - 1;	// points to last char in saveName
+		if (saveName[length] == '\n')
+			saveName[length] = '\0';
+
 		if (length > 5)
-		{
-			strncpy(imageName, saveName, length-1);
-			saveDiskImage(1, imageName);
-		}
-		else if (length == 2)
-		{
-			printf("NEED TO IMPLEMENT\n");
-		}
+			saveDiskImage(1, saveName);
 	}
 
 	printf ("---Shutting down...\n");
