@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	03/18/2020
+	02/2022
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +90,8 @@ unsigned char tempBuffer[512];					// holds data from A2 till verified
 //const char *diskImages[] = {"Large/System604.po", "Large/BigBlank.po"};
 
 const char *diskImages[] = {"Large/MySystem604.po", "Large/DISKS_AA.po"};
+//const char *diskImages[] = {"Large/MySystem604.po", "Large/BBBGames.po"};
+//const char *diskImages[] = {"Large/MySystem604.po", "Large/HDBackup.po"};
 
 // IDs provided by A2
 unsigned char spID1, spID2;
@@ -102,7 +104,6 @@ int main(int argc, char *argv[])
 	unsigned char diskImage1Changed, diskImage2Changed;		// 1 = image changed since loading
 	unsigned int i, resetCnt, loopCnt, blkNum, readCnt1, writeCnt1, readCnt2, writeCnt2;
 	char saveName[64];
-	size_t length;
 
 	enum pruStatuses {eIDLE, eRESET, eENABLED, eRCVDPACK, eSENDING, eWRITING, eUNKNOWN};
 	enum pruStatuses pruStatus, lastPruStatus;
@@ -466,39 +467,39 @@ int main(int argc, char *argv[])
 		if (loopCnt == 600000)
 		{
 			loopCnt = 0;
-			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
+//rmh			printf("\treadCnt= %d\t%d\twriteCnt= %d\t%d\n", readCnt1, readCnt2, writeCnt1, writeCnt2);
 		}
 	} while (running);
 
+    char *slash;
+    int slashIdx;
 	if (diskImage1Changed)
 	{
-		printf("FYI - disk image 1 was modified:\n");
-		printf(" - Save %s modifications? Enter name (???.po) or <CR>:  ", diskImages[0]);
+		slash  = strchr(diskImages[0], '/');
+        slashIdx = (int)(slash - diskImages[0] + 1);    // 1 char past '/'
 
-		fgets(saveName, 64, stdin);
-		length = strlen(saveName) - 1;	// points to last char in saveName
-		if (saveName[length] == '\n')
-			saveName[length] = '\0';
+        i = 0;
+        while((saveName[i] = diskImages[0][i+slashIdx]) != '\0')
+            i++;
 
-		if (length > 5)
-			saveDiskImage(0, saveName);
+        printf("FYI - %s was modified. Saving to Saved folder.:\n", saveName);
+		saveDiskImage(0, saveName);
 	}
 
 	if (diskImage2Changed)
 	{
-		printf("FYI - disk image 2 was modified:\n");
-		printf(" - Save %s modifications? Enter name (???.po) or <CR>: ", diskImages[1]);
+        slash = strchr(diskImages[1], '/');
+        slashIdx = (int)(slash - diskImages[1] + 1);
 
-		fgets(saveName, 64, stdin);
-		length = strlen(saveName) - 1;	// points to last char in saveName
-		if (saveName[length] == '\n')
-			saveName[length] = '\0';
+        i = 0;
+        while((saveName[i] = diskImages[1][i+slashIdx]) != '\0')
+            i++;
 
-		if (length > 5)
-			saveDiskImage(1, saveName);
+		printf("FYI - %s was modified. Saving tp Saved folder\n", saveName);
+		saveDiskImage(1, saveName);
 	}
 
-	printf ("---Shutting down...\n");
+	printf ("\n---Shutting down...\n");
 
 	if(munmap(pru, PRU_LEN))
 		printf("*** ERROR: munmap failed at Shutdown\n");
@@ -615,7 +616,7 @@ void saveDiskImage(unsigned char image, const char *fileName)
 
 	sprintf(imagePath, "/root/DiskImages/Saved/%s", fileName);	// create image path
 
-	printf(" --- Saving: %s ---\n", fileName);
+//	printf(" --- Saving: %s ---\n", fileName);
 	fd = fopen(imagePath, "wb");;
 	if (fd == NULL)
 	{
