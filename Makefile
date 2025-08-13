@@ -9,7 +9,7 @@
 $(warning TARGET=$(TARGET), PRUN=$(PRUN), MODEL=$(MODEL))
 
 PRU_CGT:=/usr/share/ti/cgt-pru
-PRU_SUPPORT:=/usr/lib/ti/pru-software-support-package
+PRU_SUPPORT:=/usr/lib/ti/pru-software-support-package-v6.0
 GEN_DIR:=/tmp/pru$(PRUN)-gen
 
 LINKER_COMMAND_FILE=AM335x_PRU.cmd

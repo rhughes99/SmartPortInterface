@@ -1,7 +1,7 @@
 /*	SmartPort Controller TEST
 	Emulates two devices
 	Modern OS, shared memory
-	02/2022
+	08/2025
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -495,7 +495,7 @@ int main(int argc, char *argv[])
         while((saveName[i] = diskImages[1][i+slashIdx]) != '\0')
             i++;
 
-		printf("FYI - %s was modified. Saving tp Saved folder\n", saveName);
+		printf("FYI - %s was modified. Saving to Saved folder\n", saveName);
 		saveDiskImage(1, saveName);
 	}
 
